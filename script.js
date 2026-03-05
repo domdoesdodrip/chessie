@@ -48,6 +48,11 @@ let myElo = 225, oppElo = 225, myUid = null, oppUid = null;
 let unreadChat = 0, connectionReady = false, helloSent = false, helloReceived = false;
 let scoreMe = 0, scoreOpp = 0;
 let isBot = false, botLevel = 1, botColor = 'b', botThinking = false;
+
+// --- Spectator Tracking ---
+let spectators = [];
+let isSpectating = false;
+
 const botNames = { 1: 'Bot 1', 2: 'Bot 2', 3: 'Bot 3', 4: 'Coach Bot' };
 const moveSound = new Audio('move.mp3');
 let soundEnabled = localStorage.getItem('chessie-sound') !== 'off';
@@ -113,12 +118,91 @@ function findBestAndPlayedEval(color, b, savedEP, savedCR, fR, fC, tR, tC) {
 function botMove() { if (!turn || turn !== botColor || !isBot || gameOver) return; botThinking = true; thinkingEl.classList.add('visible'); let effectiveLevel = botLevel; if (botLevel === 4) { let playerAcc = 50; if (moveHistory.length > 1) { let goodMoves = 0; let playerMoves = moveHistory.filter(m => m.color !== botColor); if (playerMoves.length > 0) { playerMoves.forEach(m => { const ev = findBestAndPlayedEval(m.color, m.boardBefore, m.savedEP, m.savedCR, m.fR, m.fC, m.tR, m.tC); const cl = classifyMove(ev.bestVal, ev.playedVal, m.color, m.isBook); if (['best', 'excellent', 'good', 'book', 'brilliant'].includes(cl.cls)) goodMoves++; }); playerAcc = (goodMoves / playerMoves.length) * 100; } } if (playerAcc < 40) effectiveLevel = 1; else if (playerAcc < 75) effectiveLevel = 2; else effectiveLevel = 3; } const thinkBase = effectiveLevel === 3 ? 1800 : effectiveLevel === 2 ? 1200 : 800; const thinkTime = thinkBase + ~~(Math.random() * 1200); setTimeout(() => { const moves = getAllMoves(botColor, board); if (!moves.length) return; let best = null; if (effectiveLevel === 1) { const caps = moves.filter(m => board[m.tR][m.tC]); best = (caps.length && Math.random() < .4) ? caps[~~(Math.random() * caps.length)] : moves[~~(Math.random() * moves.length)]; } else if (effectiveLevel === 2) { const isMax = botColor === 'w'; let scored = moves.map(m => ({ ...m, val: evaluateBoard(simMove(board, m.fR, m.fC, m.tR, m.tC, 'Q')) + (Math.random() - .5) * 250 })); scored.sort((a, b) => isMax ? b.val - a.val : a.val - b.val); best = scored[Math.random() < .25 ? Math.min(~~(Math.random() * 4), scored.length - 1) : 0]; } else { const isMax = botColor === 'w'; let bestVal = isMax ? -Infinity : Infinity; const ord = orderMoves(moves, board); const sEP = enPassantTarget, sCR = { ...castleRights }; for (const m of ord) { const mvr = board[m.fR][m.fC]; const nEP = (mvr.type[1] === 'P' && Math.abs(m.tR - m.fR) === 2) ? { r: (m.fR + m.tR) / 2, c: m.fC } : null; const nCR = { ...castleRights }; if (mvr.type[1] === 'K') { nCR[botColor + 'K'] = false; nCR[botColor + 'QR'] = false; nCR[botColor + 'KR'] = false; } if (mvr.type[1] === 'R') { if (m.fC === 0) nCR[botColor + 'QR'] = false; if (m.fC === 7) nCR[botColor + 'KR'] = false; } const nb = simMove(board, m.fR, m.fC, m.tR, m.tC, 'Q'); const val = minimax(nb, 2, -Infinity, Infinity, !isMax, nEP, nCR) + (Math.random() - .5) * 120; if (isMax ? val > bestVal : val < bestVal) { bestVal = val; best = m; } } enPassantTarget = sEP; Object.assign(castleRights, sCR); } botThinking = false; thinkingEl.classList.remove('visible'); if (best) { const mvr = board[best.fR][best.fC]; const pr = (mvr.type[1] === 'P' && (best.tR === 0 || best.tR === 7)) ? 'Q' : null; executeMove(best.fR, best.fC, best.tR, best.tC, pr, true); } }, thinkTime); }
 
 function openOnlineMenu() { document.getElementById('online-overlay').style.display = 'flex'; document.getElementById('ol-status').innerText = ''; document.getElementById('ol-status').className = 'online-status'; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; }
-function closeOnlineMenu() { document.getElementById('online-overlay').style.display = 'none'; if (peer && !conn) { peer.destroy(); peer = null; } }
+function closeOnlineMenu() { document.getElementById('online-overlay').style.display = 'none'; if (peer && !conn && !isSpectating) { peer.destroy(); peer = null; } }
 function setOlStatus(m, t) { const el = document.getElementById('ol-status'); el.innerHTML = m; el.className = 'online-status' + (t ? ' ' + t : ''); }
 function genCode() { const ch = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let c = ''; for (let i = 0; i < 5; i++)c += ch[~~(Math.random() * ch.length)]; return c; }
 function copyCode(c) { navigator.clipboard.writeText(c).catch(() => { }); }
-function cleanupPeer() { if (peer) { try { peer.destroy(); } catch (e) { } peer = null; } conn = null; connectionReady = false; }
+
+// --- Spectator & Firebase Sync Functions ---
+async function updateActiveMatch(peerId) {
+    if (typeof firebase !== 'undefined' && typeof currentUser !== 'undefined' && currentUser) {
+        try {
+            const db = firebase.firestore();
+            if (peerId) {
+                await db.collection('users').doc(currentUser.uid).update({ activeMatch: peerId });
+            } else {
+                await db.collection('users').doc(currentUser.uid).update({ activeMatch: firebase.firestore.FieldValue.delete() });
+            }
+        } catch (e) { console.error("Error updating active match:", e); }
+    }
+}
+
+function broadcastToSpectators(data) {
+    spectators.forEach(s => { if (s.open) s.send(data); });
+}
+
+function updateSpectatorCount() {
+    const el = document.getElementById('spectator-count');
+    const val = document.getElementById('spectator-count-val');
+    if (spectators.length > 0) {
+        el.style.display = 'flex';
+        val.innerText = spectators.length;
+    } else {
+        el.style.display = 'none';
+    }
+}
+
+function syncSpectator(c) {
+    if (!c.open) return;
+    const boardData = board.map(row => row.map(cell => cell ? cell.type : null));
+    c.send({
+        type: 'sync-spectator',
+        board: boardData,
+        turn, timeW, timeB, moveHistory,
+        wName: flipped ? oppName : myName,
+        bName: flipped ? myName : oppName,
+        wElo: flipped ? oppElo : myElo,
+        bElo: flipped ? myElo : oppElo,
+        scoreMe, scoreOpp,
+        gameStarted, gameOver
+    });
+}
+
+function spectateMatch(peerId) {
+    hideStart(); 
+    if(typeof closeFriendsPanel === 'function') closeFriendsPanel(); 
+    if(typeof closeAuthPanel === 'function') closeAuthPanel();
+    const fp = document.getElementById('ol-friends-popup');
+    if(fp) fp.classList.remove('open');
+    const upm = document.getElementById('user-profile-modal');
+    if(upm) upm.style.display = 'none';
+    
+    cleanupPeer();
+    isSpectating = true;
+    peer = new Peer(undefined, peerOpts);
+    
+    peer.on('open', () => {
+        setOlStatus('Connecting to match...', '');
+        document.getElementById('online-overlay').style.display = 'flex';
+        
+        conn = peer.connect(peerId, { reliable: true });
+        conn.on('open', () => {
+            document.getElementById('online-overlay').style.display = 'none';
+            conn.send({ type: 'spectate', name: typeof myName !== 'undefined' ? myName : 'Spectator' });
+        });
+        conn.on('data', handleNet);
+        conn.on('close', () => { addSys('Host disconnected.'); });
+    });
+}
+
+function cleanupPeer() { 
+    updateActiveMatch(null);
+    if (peer) { try { peer.destroy(); } catch (e) { } peer = null; } 
+    conn = null; connectionReady = false; spectators = []; updateSpectatorCount();
+}
+
 const peerOpts = { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] } };
+
 function createRoom() {
     const n = document.getElementById('ol-name').value.trim() || 'Player 1';
     myName = n; cleanupPeer();
@@ -130,16 +214,26 @@ function createRoom() {
     peer.on('open', () => {
         setOlStatus('Share code: <strong style="font-size:1.3rem;letter-spacing:2px;color:var(--accent)">' + rc + '</strong> <button class="copy-btn" onclick="copyCode(\'' + rc + '\')">Copy</button><br><span style="font-size:.65rem;color:var(--text-muted)">Waiting<span class="searching-dots"></span></span>', 'success');
     });
+    
+    // Unified Connection Handler
     peer.on('connection', c => {
-        if (conn) { c.close(); return; }
-        conn = c; myColor = 'w'; flipped = false;
-        initConn();
+        c.once('data', d => {
+            if (d.type === 'spectate') {
+                spectators.push(c); updateSpectatorCount(); syncSpectator(c);
+                c.on('close', () => { spectators = spectators.filter(s => s !== c); updateSpectatorCount(); });
+            } else if (d.type === 'hello') {
+                if (conn) { c.close(); return; }
+                conn = c; myColor = 'w'; flipped = false; initConn(); handleNet(d);
+            }
+        });
     });
+
     peer.on('error', e => {
         if (e.type === 'unavailable-id') { cleanupPeer(); setTimeout(createRoom, 500); }
         else { setOlStatus('Error: ' + e.type, 'error'); document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; }
     });
 }
+
 function joinRoom() {
     const n = document.getElementById('ol-name').value.trim() || 'Player 2';
     const ri = document.getElementById('ol-room').value.trim().toUpperCase();
@@ -161,6 +255,17 @@ function joinRoom() {
         conn.on('open', () => { clearTimeout(to); myColor = 'b'; flipped = true; initConn(); });
         conn.on('error', () => { clearTimeout(to); setOlStatus('Connection failed.', 'error'); if (peer) { try { peer.destroy(); } catch (e) { } peer = null; } conn = null; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; });
     });
+    
+    // Accept spectators if joining as Black
+    peer.on('connection', c => {
+        c.once('data', d => {
+            if (d.type === 'spectate') {
+                spectators.push(c); updateSpectatorCount(); syncSpectator(c);
+                c.on('close', () => { spectators = spectators.filter(s => s !== c); updateSpectatorCount(); });
+            }
+        });
+    });
+
     peer.on('error', e => {
         if (e.type === 'peer-unavailable') setOlStatus('Room not found.', 'error');
         else setOlStatus('Error: ' + e.type, 'error');
@@ -168,6 +273,7 @@ function joinRoom() {
         conn = null; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false;
     });
 }
+
 function initConn() {
     connectionReady = true; helloSent = false; helloReceived = false;
     conn.on('data', handleNet);
@@ -187,8 +293,55 @@ function initConn() {
         r++;
     }, 500);
 }
-function startOnline() { hideStart(); isOnline = true; isBot = false; document.getElementById('online-overlay').style.display = 'none'; document.getElementById('chat-toggle').style.display = 'block'; scoreMe = 0; scoreOpp = 0; coachActive = false; updateCoachLayout(); resetCoachHistory(); resetGame(); }
+
+function startOnline() { 
+    hideStart(); isOnline = true; isBot = false; isSpectating = false; 
+    document.getElementById('online-overlay').style.display = 'none'; 
+    document.getElementById('chat-toggle').style.display = 'block'; 
+    scoreMe = 0; scoreOpp = 0; coachActive = false; 
+    updateCoachLayout(); resetCoachHistory(); resetGame();
+    updateActiveMatch(peer ? peer.id : (conn ? conn.peer : null));
+}
+
 function handleNet(d) {
+    if (d.type === 'sync-spectator') {
+        isOnline = true; isBot = false; isSpectating = true;
+        document.getElementById('spectator-banner').style.display = 'block';
+        document.getElementById('btn-resign').style.display = 'none';
+        document.getElementById('btn-draw').style.display = 'none';
+        document.getElementById('mob-btn-resign').style.display = 'none';
+        document.getElementById('mob-btn-draw').style.display = 'none';
+        document.getElementById('chat-toggle').style.display = 'block';
+        
+        turn = d.turn; timeW = d.timeW; timeB = d.timeB; moveHistory = d.moveHistory;
+        scoreMe = d.scoreMe; scoreOpp = d.scoreOpp;
+        oppName = d.wName + ' vs ' + d.bName; 
+        flipped = false;
+        
+        gridEl.innerHTML = ''; piecesLayer.innerHTML = '';
+        board = Array(8).fill(null).map(() => Array(8).fill(null));
+        for(let r=0; r<8; r++) {
+            for(let c=0; c<8; c++) {
+                if(d.board[r][c]) {
+                    const el = document.createElement('div');
+                    el.className = 'piece';
+                    el.style.backgroundImage = `url(${pieceImgs[d.board[r][c]]})`;
+                    el.style.left = (c * 12.5) + '%';
+                    el.style.top = (r * 12.5) + '%';
+                    piecesLayer.appendChild(el);
+                    board[r][c] = { type: d.board[r][c], el };
+                }
+            }
+        }
+        buildBoard(); updateTimer(); updateLabels();
+        if(d.gameStarted && !d.gameOver) startTimer();
+        hideStart();
+        return;
+    }
+
+    if (d.type === 'game-over') { endGame(d.sub, d.res, d.outcome); return; }
+    if (d.type === 'rematch') { startRematch(); return; }
+
     if (d.type === 'hello') {
         if (!helloReceived) {
             helloReceived = true; oppName = d.name || 'Opponent'; oppElo = d.elo || 225; oppUid = d.uid || null;
@@ -205,7 +358,11 @@ function handleNet(d) {
     }
     if (d.type === 'elo-update') { oppElo = d.elo; updateLabels(); }
     if (d.type === 'move') executeMove(d.fR, d.fC, d.tR, d.tC, d.promo, true);
-    if (d.type === 'chat') { addChatMsg(oppName, d.msg, 'opp'); if (!document.getElementById('chat-panel').classList.contains('open')) { unreadChat++; const b = document.getElementById('chat-badge'); b.style.display = 'inline'; b.innerText = unreadChat; } }
+    if (d.type === 'chat') { 
+        const sender = isSpectating ? d.name : oppName;
+        addChatMsg(sender, d.msg, 'opp'); 
+        if (!document.getElementById('chat-panel').classList.contains('open')) { unreadChat++; const b = document.getElementById('chat-badge'); b.style.display = 'inline'; b.innerText = unreadChat; } 
+    }
     if (d.type === 'resign') { scoreMe++; endGame(oppName + ' resigned', 'You win!', 'win'); }
     if (d.type === 'draw-offer') { isPaused = true; document.getElementById('modal-text').innerText = oppName + ' offers a draw. Accept?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); conn.send({ type: 'draw-accept' }); endGame('Draw by agreement', '½ — ½', 'draw'); }; modalOverlay.style.display = 'flex'; }
     if (d.type === 'draw-accept') { closeModal(); endGame('Draw by agreement', '½ — ½', 'draw'); }
@@ -228,7 +385,12 @@ function handleNet(d) {
 function sendMv(fR, fC, tR, tC, pr) { if (conn?.open) conn.send({ type: 'move', fR, fC, tR, tC, promo: pr || null }); }
 
 function toggleChat() { const p = document.getElementById('chat-panel'); p.classList.toggle('open'); if (p.classList.contains('open')) { unreadChat = 0; document.getElementById('chat-badge').style.display = 'none'; document.getElementById('chat-input').focus(); } }
-function sendChat() { const i = document.getElementById('chat-input'); const m = i.value.trim(); if (!m) return; i.value = ''; addChatMsg(myName, m, 'you'); if (conn?.open) conn.send({ type: 'chat', msg: m }); }
+function sendChat() { 
+    const i = document.getElementById('chat-input'); const m = i.value.trim(); if (!m) return; 
+    i.value = ''; addChatMsg(myName, m, 'you'); 
+    if (conn?.open) conn.send({ type: 'chat', msg: m }); 
+    if (isOnline) broadcastToSpectators({ type: 'chat', msg: m, name: myName });
+}
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && document.activeElement === document.getElementById('chat-input')) sendChat(); });
 function addChatMsg(n, m, c) { const el = document.createElement('div'); el.className = 'chat-msg ' + c; el.innerHTML = '<span class="chat-name">' + esc(n) + ':</span> ' + esc(m); document.getElementById('chat-messages').appendChild(el); document.getElementById('chat-messages').scrollTop = 99999; }
 function addSys(m) { const el = document.createElement('div'); el.className = 'chat-msg sys'; el.innerText = m; document.getElementById('chat-messages').appendChild(el); document.getElementById('chat-messages').scrollTop = 99999; }
@@ -242,10 +404,10 @@ function updateLabels() {
     const tl = document.getElementById('label-top'), bl = document.getElementById('label-bot'), mtl = document.getElementById('mob-label-top'), mbl = document.getElementById('mob-label-bot');
     const bEloStr = myUid ? myElo : 'Guest';
     const tEloStr = oppUid ? oppElo : 'Guest';
-    const bName = isBot ? 'You' : (myName + (isOnline ? ' (' + bEloStr + ')' : ''));
-    const tName = isBot ? 'Bot' : (oppName + (isOnline && !isBot ? ' (' + tEloStr + ')' : ''));
+    const bName = isBot ? 'You' : (myName + (isOnline && !isSpectating ? ' (' + bEloStr + ')' : ''));
+    const tName = isBot ? 'Bot' : (oppName + (isOnline && !isBot && !isSpectating ? ' (' + tEloStr + ')' : ''));
     if (isOnline || isBot) { bl.innerText = bName; tl.innerText = tName; mbl.innerText = bName; mtl.innerText = tName; } else { bl.innerText = flipped ? 'Black' : 'White'; tl.innerText = flipped ? 'White' : 'Black'; mbl.innerText = flipped ? 'Black' : 'White'; mtl.innerText = flipped ? 'White' : 'Black'; }
-    if (isOnline) {
+    if (isOnline && !isSpectating) {
         const topUid = oppUid;
         const botUid = myUid;
         [tl, mtl].forEach(el => { el.style.cursor = topUid ? 'pointer' : ''; el.onclick = topUid ? () => { if (typeof showUserProfile === 'function') showUserProfile(topUid); } : null; });
@@ -266,15 +428,80 @@ function startRematch() {
         myElo = typeof currentProfile !== 'undefined' && currentProfile ? currentProfile.elo || 225 : 225;
         myUid = typeof currentUser !== 'undefined' && currentUser ? currentUser.uid : null;
         if (conn?.open) conn.send({ type: 'hello', name: myName, elo: myElo, uid: myUid });
+        broadcastToSpectators({ type: 'rematch' });
     }
     resetGame();
     if (isBot && botColor === 'w') setTimeout(botMove, 500);
 }
-function handleForfeitRequest() { if (!turn || gameOver) return; if ((isOnline || isBot) && turn !== myColor) return; isPaused = true; document.getElementById('modal-text').innerText = 'Resign?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); if (isOnline) { conn.send({ type: 'resign' }); scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); } else if (isBot) { scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); } else endGame((turn === 'w' ? 'White' : 'Black') + ' resigned', (turn === 'w' ? 'Black' : 'White') + ' wins!', ''); }; modalOverlay.style.display = 'flex'; }
-function handleDrawRequest() { if (!turn || gameOver) return; if (isBot) { endGame('Draw', '½ — ½', 'draw'); return; } if (isOnline) { if (turn !== myColor) return; conn.send({ type: 'draw-offer' }); addSys('You offered a draw'); return; } isPaused = true; document.getElementById('modal-text').innerText = 'Agree to a draw?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); endGame('Draw', '½ — ½', 'draw'); }; modalOverlay.style.display = 'flex'; }
+function handleForfeitRequest() { if (!turn || gameOver || isSpectating) return; if ((isOnline || isBot) && turn !== myColor) return; isPaused = true; document.getElementById('modal-text').innerText = 'Resign?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); if (isOnline) { conn.send({ type: 'resign' }); scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); } else if (isBot) { scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); } else endGame((turn === 'w' ? 'White' : 'Black') + ' resigned', (turn === 'w' ? 'Black' : 'White') + ' wins!', ''); }; modalOverlay.style.display = 'flex'; }
+function handleDrawRequest() { if (!turn || gameOver || isSpectating) return; if (isBot) { endGame('Draw', '½ — ½', 'draw'); return; } if (isOnline) { if (turn !== myColor) return; conn.send({ type: 'draw-offer' }); addSys('You offered a draw'); return; } isPaused = true; document.getElementById('modal-text').innerText = 'Agree to a draw?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); endGame('Draw', '½ — ½', 'draw'); }; modalOverlay.style.display = 'flex'; }
 function updateMaterial() { let wS = 0, bS = 0; for (let r = 0; r < 8; r++)for (let c = 0; c < 8; c++) { const p = board[r][c]; if (!p) continue; if (p.type[0] === 'w') wS += valMap[p.type[1]]; else bS += valMap[p.type[1]]; } const d = wS - bS; const tc = flipped ? 'w' : 'b', bc = flipped ? 'b' : 'w'; const ta = tc === 'w' ? d : -d, ba = bc === 'w' ? d : -d; document.getElementById('score-top').innerText = ta > 0 ? '+' + ta : ''; document.getElementById('score-bot').innerText = ba > 0 ? '+' + ba : ''; document.getElementById('mob-score-top').innerText = ta > 0 ? '+' + ta : ''; document.getElementById('mob-score-bot').innerText = ba > 0 ? '+' + ba : ''; }
 
-function endGame(sub, res, outcome) { if (timerInterval) clearInterval(timerInterval); turn = null; gameOver = true; setStatus(res, false); thinkingEl.classList.remove('visible'); document.querySelectorAll('.timer-card').forEach(t => t.classList.remove('active-timer')); document.querySelectorAll('.mobile-timer').forEach(t => t.classList.remove('active')); btnNew.classList.add('visible'); document.getElementById('btn-review').classList.add('visible'); mobBtnNew.style.display = 'block'; document.getElementById('mob-btn-review').style.display = 'block'; document.getElementById('btn-draw').style.display = 'none'; document.getElementById('btn-resign').style.display = 'none'; document.getElementById('mob-btn-draw').style.display = 'none'; document.getElementById('mob-btn-resign').style.display = 'none'; document.getElementById('banner-result').innerText = res; let eloStr = ''; if (isOnline || isBot) { if (outcome === 'draw') { scoreMe += .5; scoreOpp += .5; } document.getElementById('banner-score-row').style.display = 'flex'; document.getElementById('score-you').innerText = scoreMe % 1 === 0 ? scoreMe : scoreMe.toFixed(1); document.getElementById('score-opp').innerText = scoreOpp % 1 === 0 ? scoreOpp : scoreOpp.toFixed(1); document.getElementById('score-you-label').innerText = isBot ? 'You' : myName; document.getElementById('score-opp-label').innerText = oppName; if (outcome && typeof recordGameResult === 'function' && isOnline && !isBot) { let myAcc = 50; if (moveHistory.length > 0) { let playerMoves = moveHistory.filter(m => m.color === myColor).length; if (playerMoves > 0) { let mistakes = 0; for (let i = 0; i < moveHistory.length; i++) { if (moveHistory[i].color === myColor) { let prevE = i > 0 ? moveHistory[i - 1].evalAfter : 0; let curE = moveHistory[i].evalAfter; let diff = myColor === 'w' ? (curE - prevE) : (prevE - curE); if (diff < -150) mistakes++; } } myAcc = Math.max(10, Math.min(100, 100 - (mistakes * 10))); } } const eloInfo = recordGameResult(outcome, oppElo, myAcc); if (eloInfo) { eloStr = ' (' + (eloInfo.eloChange >= 0 ? '+' : '') + eloInfo.eloChange + ')'; myElo = eloInfo.newElo; updateLabels(); if (isOnline && conn?.open) conn.send({ type: 'elo-update', elo: myElo }); } } else if (outcome && typeof recordGameResult === 'function') { recordGameResult(outcome, 225, 50); } } else { document.getElementById('banner-score-row').style.display = 'none'; } document.getElementById('banner-sub').innerText = sub + eloStr; banner.classList.add('visible'); }
+function endGame(sub, res, outcome) { 
+    if (timerInterval) clearInterval(timerInterval); 
+    turn = null; gameOver = true; setStatus(res, false); 
+    thinkingEl.classList.remove('visible'); 
+    document.querySelectorAll('.timer-card').forEach(t => t.classList.remove('active-timer')); 
+    document.querySelectorAll('.mobile-timer').forEach(t => t.classList.remove('active')); 
+    
+    if(!isSpectating) {
+        btnNew.classList.add('visible'); 
+        mobBtnNew.style.display = 'block'; 
+        document.getElementById('btn-review').classList.add('visible'); 
+        document.getElementById('mob-btn-review').style.display = 'block'; 
+        document.getElementById('btn-draw').style.display = 'none'; 
+        document.getElementById('btn-resign').style.display = 'none'; 
+        document.getElementById('mob-btn-draw').style.display = 'none'; 
+        document.getElementById('mob-btn-resign').style.display = 'none'; 
+    }
+    
+    document.getElementById('banner-result').innerText = res; 
+    let eloStr = ''; 
+    if (isOnline || isBot) { 
+        if (outcome === 'draw') { scoreMe += .5; scoreOpp += .5; } 
+        document.getElementById('banner-score-row').style.display = 'flex'; 
+        document.getElementById('score-you').innerText = scoreMe % 1 === 0 ? scoreMe : scoreMe.toFixed(1); 
+        document.getElementById('score-opp').innerText = scoreOpp % 1 === 0 ? scoreOpp : scoreOpp.toFixed(1); 
+        document.getElementById('score-you-label').innerText = isSpectating ? 'P1' : (isBot ? 'You' : myName); 
+        document.getElementById('score-opp-label').innerText = isSpectating ? 'P2' : oppName; 
+        
+        if (outcome && typeof recordGameResult === 'function' && isOnline && !isBot && !isSpectating) { 
+            let myAcc = 50; 
+            if (moveHistory.length > 0) { 
+                let playerMoves = moveHistory.filter(m => m.color === myColor).length; 
+                if (playerMoves > 0) { 
+                    let mistakes = 0; 
+                    for (let i = 0; i < moveHistory.length; i++) { 
+                        if (moveHistory[i].color === myColor) { 
+                            let prevE = i > 0 ? moveHistory[i - 1].evalAfter : 0; 
+                            let curE = moveHistory[i].evalAfter; 
+                            let diff = myColor === 'w' ? (curE - prevE) : (prevE - curE); 
+                            if (diff < -150) mistakes++; 
+                        } 
+                    } 
+                    myAcc = Math.max(10, Math.min(100, 100 - (mistakes * 10))); 
+                } 
+            } 
+            const eloInfo = recordGameResult(outcome, oppElo, myAcc); 
+            if (eloInfo) { 
+                eloStr = ' (' + (eloInfo.eloChange >= 0 ? '+' : '') + eloInfo.eloChange + ')'; 
+                myElo = eloInfo.newElo; 
+                updateLabels(); 
+                if (isOnline && conn?.open) conn.send({ type: 'elo-update', elo: myElo }); 
+            } 
+        } 
+    } else { 
+        document.getElementById('banner-score-row').style.display = 'none'; 
+    } 
+    document.getElementById('banner-sub').innerText = sub + eloStr; 
+    banner.classList.add('visible'); 
+
+    if (isOnline) {
+        broadcastToSpectators({ type: 'game-over', sub, res, outcome });
+        if(!isSpectating) updateActiveMatch(null);
+    }
+}
+
 function setStatus(m, ch) { statusEl.innerText = m; mobStatus.innerText = m; statusEl.classList.toggle('in-check', ch); mobStatus.classList.toggle('in-check', ch); }
 function startTimer() { if (timerInterval) return; timerInterval = setInterval(() => { if (isPaused || !turn) return; if (turn === 'w') timeW--; else timeB--; updateTimer(); if (timeW <= 0) { if ((isOnline || isBot) && myColor === 'w') { scoreOpp++; endGame('Time out', oppName + ' wins!', 'loss'); } else if (isOnline || isBot) { scoreMe++; endGame('Time out', 'You win!', 'win'); } else endGame('Time out', 'Black wins!', ''); } if (timeB <= 0) { if ((isOnline || isBot) && myColor === 'b') { scoreOpp++; endGame('Time out', oppName + ' wins!', 'loss'); } else if (isOnline || isBot) { scoreMe++; endGame('Time out', 'You win!', 'win'); } else endGame('Time out', 'White wins!', ''); } }, 1000); }
 function updateTimer() { const f = s => { if (s < 0) s = 0; return (~~(s / 60)).toString().padStart(2, '0') + ':' + (s % 60).toString().padStart(2, '0'); }; const tc = flipped ? 'w' : 'b', bc = flipped ? 'b' : 'w'; const tt = tc === 'w' ? timeW : timeB, bt = bc === 'w' ? timeW : timeB; document.getElementById('timer-top').innerText = f(tt); document.getElementById('timer-bot').innerText = f(bt); document.getElementById('timer-top').classList.toggle('low-time', tt <= 30); document.getElementById('timer-bot').classList.toggle('low-time', bt <= 30); document.getElementById('timer-top-card').classList.toggle('active-timer', turn === tc); document.getElementById('timer-bot-card').classList.toggle('active-timer', turn === bc); document.getElementById('mob-timer-top-val').innerText = f(tt); document.getElementById('mob-timer-bot-val').innerText = f(bt); document.getElementById('mob-t-opp').classList.toggle('active', turn === tc); document.getElementById('mob-t-you').classList.toggle('active', turn === bc); }
@@ -304,7 +531,9 @@ function executeMove(fR, fC, tR, tC, promo, isRemote) {
     if (!isCastle) { const pn = pieceNames[pt]; const ff = pt === 'P' && isCap ? String.fromCharCode(97 + fC) : ''; notation = (pn || ff) + (isCap ? 'x' : '') + String.fromCharCode(97 + tC) + (8 - tR); if (promo) notation += '=' + promo; }
     lastMoveSquares = [viewR(fR) + '-' + viewC(fC), viewR(tR) + '-' + viewC(tC)];
     lastMoveSquares.forEach(k => { const el = document.getElementById('sq-' + k); if (el) el.classList.add('last-move'); });
-    if (isOnline && !isRemote) sendMv(fR, fC, tR, tC, promo);
+    
+    if (isOnline && !isRemote && !isSpectating) sendMv(fR, fC, tR, tC, promo);
+    if (isOnline && !isSpectating) broadcastToSpectators({ type: 'move', fR, fC, tR, tC, promo, isRemote: true });
 
     const evalAfter = evaluateBoard(board);
 
@@ -340,7 +569,7 @@ function clearCheck() { document.querySelectorAll('.check-square').forEach(s => 
 function addHist(num, not, col) { const mn = Math.ceil(num / 2); if (isOnline || isBot) { const lb = (col === myColor) ? 'You' : (isBot ? 'Bot' : 'Opp'); const e = document.createElement('div'); e.className = 'move-entry'; e.innerHTML = '<span class="move-number">' + lb + '</span><span class="' + (col === myColor ? 'move-white' : 'move-black') + '">' + not + '</span>'; historyList.appendChild(e); } else { if (col === 'w') { const e = document.createElement('div'); e.className = 'move-entry'; e.id = 'move-' + mn; e.innerHTML = '<span class="move-number">' + mn + '.</span><span class="move-white">' + not + '</span>'; historyList.appendChild(e); } else { const e = document.getElementById('move-' + mn); if (e) e.innerHTML += '<span class="move-black" style="margin-left:10px">' + not + '</span>'; } } historyList.scrollTop = historyList.scrollHeight; }
 function movePiece(fR, fC, tR, tC) { if (board[fR][fC].type[1] === 'P' && (tR === 0 || tR === 7)) { showPromo(fR, fC, tR, tC); return; } executeMove(fR, fC, tR, tC, null, false); }
 function handleClick(vr, vc) {
-    if (isPaused || (!turn && !cheatGodMode) || gameOver) return;
+    if (isPaused || (!turn && !cheatGodMode) || gameOver || isSpectating) return;
     const r = actualR(vr), c = actualC(vc);
     if (!cheatGodMode && ((isOnline || isBot) && turn !== myColor)) return;
     clearAnnot();
@@ -371,7 +600,7 @@ function handleClick(vr, vc) {
 
 function startDrag(e) {
     if (e.button && e.button !== 0) return;
-    if (isPaused || (!turn && !cheatGodMode) || gameOver) return;
+    if (isPaused || (!turn && !cheatGodMode) || gameOver || isSpectating) return;
     const rect = gameView.getBoundingClientRect();
     const cx = e.touches ? e.touches[0].clientX : e.clientX, cy = e.touches ? e.touches[0].clientY : e.clientY;
     const vc = ~~((cx - rect.left) / (rect.width / 8)), vr = ~~((cy - rect.top) / (rect.height / 8));
@@ -438,9 +667,7 @@ function classifyMove(bestEval, playedEval, color, isBookMove) {
     const playedCP = playedEval * sign;
     const cpLoss = bestCP - playedCP;
 
-    // Only consider it a book move if it's not a terrible move
     if (isBookMove && cpLoss <= 45) return { cls: 'book', label: 'Book' };
-
     if (cpLoss <= 5) return { cls: 'best', label: 'Best' };
     if (cpLoss <= 25) return { cls: 'excellent', label: 'Excellent' };
     if (cpLoss <= 60) return { cls: 'good', label: 'Good' };
@@ -540,10 +767,16 @@ function resetGame() {
     gridEl.innerHTML = ''; piecesLayer.innerHTML = ''; historyList.innerHTML = ''; graveW.innerHTML = ''; graveB.innerHTML = '';
     statusEl.classList.remove('in-check'); mobStatus.classList.remove('in-check'); arrowLayer.innerHTML = '';
     thinkingEl.classList.remove('visible'); banner.classList.remove('visible');
+    
+    isSpectating = false;
+    document.getElementById('spectator-banner').style.display = 'none';
+    spectators = []; updateSpectatorCount();
+
     btnNew.classList.remove('visible'); document.getElementById('btn-review').classList.remove('visible');
     document.getElementById('btn-draw').style.display = ''; document.getElementById('btn-resign').style.display = '';
     mobBtnNew.style.display = 'none'; document.getElementById('mob-btn-review').style.display = 'none';
     document.getElementById('mob-btn-draw').style.display = ''; document.getElementById('mob-btn-resign').style.display = '';
+    
     updateLabels(); buildBoard(); updateTimer(); resetCoachHistory();
     if (isOnline) setStatus(myColor === 'w' ? 'Your turn' : oppName + "'s turn", false);
     else if (isBot) setStatus(myColor === 'w' ? 'Your turn' : oppName + ' thinking...', false);
@@ -622,9 +855,8 @@ function drawCheatArrows() {
     const myCol = (isOnline || isBot) ? myColor : 'w';
     const oppCol = myCol === 'w' ? 'b' : 'w';
     const calcId = ++cheatCalcId;
-    // Run findBest async to avoid blocking UI
     setTimeout(() => {
-        if (calcId !== cheatCalcId) return; // stale
+        if (calcId !== cheatCalcId) return; 
         const myBest = findBest(myCol);
         if (calcId !== cheatCalcId) return;
         setTimeout(() => {
@@ -635,7 +867,6 @@ function drawCheatArrows() {
         }, 0);
     }, 0);
 }
-// Hook into executeMove to auto-update arrows
 const origExecute = executeMove;
 executeMove = function () { origExecute.apply(this, arguments); if (cheatActive) setTimeout(drawCheatArrows, 10); };
 function isCheatAllowed() {
@@ -940,5 +1171,6 @@ executeMove = function () {
     origExecute2.apply(this, arguments);
     if (coachActive && !gameOver) setTimeout(evaluateCoachMove, 500);
 };
+
 
 
