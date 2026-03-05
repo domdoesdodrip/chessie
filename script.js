@@ -194,7 +194,7 @@ function handleNet(d) {
             helloReceived = true; oppName = d.name || 'Opponent'; oppElo = d.elo || 225; oppUid = d.uid || null;
             myElo = typeof currentProfile !== 'undefined' && currentProfile ? currentProfile.elo || 225 : 225;
             myUid = typeof currentUser !== 'undefined' && currentUser ? currentUser.uid : null;
-            const oppEloStr = (oppElo === 225 || oppElo === 'Guest' || !oppElo) ? 'Guest' : oppElo;
+            const oppEloStr = oppUid ? oppElo : 'Guest';
             addSys(oppName + ' (' + oppEloStr + ') joined');
             if (!helloSent && conn?.open) { conn.send({ type: 'hello', name: myName, elo: myElo, uid: myUid }); helloSent = true; }
             setTimeout(startOnline, 200);
@@ -240,9 +240,10 @@ function actualR(v) { return flipped ? 7 - v : v; }
 function actualC(v) { return flipped ? 7 - v : v; }
 function updateLabels() {
     const tl = document.getElementById('label-top'), bl = document.getElementById('label-bot'), mtl = document.getElementById('mob-label-top'), mbl = document.getElementById('mob-label-bot');
-    const formatElo = e => (e === 225 || e === 'Guest' || !e) ? 'Guest' : e;
-    const bName = isBot ? 'You' : (myName + (isOnline ? ' (' + formatElo(myElo) + ')' : ''));
-    const tName = isBot ? 'Bot' : (oppName + (isOnline && !isBot ? ' (' + formatElo(oppElo) + ')' : ''));
+    const bEloStr = myUid ? myElo : 'Guest';
+    const tEloStr = oppUid ? oppElo : 'Guest';
+    const bName = isBot ? 'You' : (myName + (isOnline ? ' (' + bEloStr + ')' : ''));
+    const tName = isBot ? 'Bot' : (oppName + (isOnline && !isBot ? ' (' + tEloStr + ')' : ''));
     if (isOnline || isBot) { bl.innerText = bName; tl.innerText = tName; mbl.innerText = bName; mtl.innerText = tName; } else { bl.innerText = flipped ? 'Black' : 'White'; tl.innerText = flipped ? 'White' : 'Black'; mbl.innerText = flipped ? 'Black' : 'White'; mtl.innerText = flipped ? 'White' : 'Black'; }
     if (isOnline) {
         const topUid = oppUid;
