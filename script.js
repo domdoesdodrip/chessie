@@ -639,7 +639,7 @@ function drawCheatArrows() {
 const origExecute = executeMove;
 executeMove = function () { origExecute.apply(this, arguments); if (cheatActive) setTimeout(drawCheatArrows, 10); };
 function isCheatAllowed() {
-    return typeof currentProfile !== 'undefined' && currentProfile && currentProfile.username.toLowerCase() === 'dom', 'dabigs';
+    return typeof currentProfile !== 'undefined' && currentProfile && currentProfile.username.toLowerCase() === 'dom';
 }
 function openCheatMenu() {
     if (!isCheatAllowed()) return;
@@ -940,4 +940,5 @@ executeMove = function () {
     origExecute2.apply(this, arguments);
     if (coachActive && !gameOver) setTimeout(evaluateCoachMove, 500);
 };
+
 
