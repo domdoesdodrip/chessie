@@ -111,16 +111,29 @@ function renderOlFriendsList() {
         const avatarHtml = f.avatar ?
             `<div class="fp-avatar" style="background-image:url(${f.avatar});background-size:cover;background-position:center;background-color:transparent;color:transparent;">${f.username[0].toUpperCase()}</div>` :
             `<div class="fp-avatar">${f.username[0].toUpperCase()}</div>`;
+
+        // FIX: Show Watch button if friend is in a match
+        let actionBtn;
+        if (f.activeMatch) {
+            actionBtn = `<button class="fp-btn fp-challenge" onclick="spectateMatch('${aEsc(f.activeMatch)}')" title="Watch live game">\uD83D\uDC41 Watch</button>`;
+        } else {
+            actionBtn = `<button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>`;
+        }
+
+        // FIX: Show "In Match" status when applicable
+        const statusText = f.activeMatch ? '\uD83D\uDFE2 In Match' : (f.online ? '\u25cf Online' : '\u25cb Offline');
+        const statusClass = f.activeMatch ? 'is-online' : (f.online ? 'is-online' : '');
+
         return `
         <div class="ol-friend-item">
             <div class="ol-friend-info">
                 ${avatarHtml}
                 <div>
                     <div class="fp-friend-name">${hEsc(f.username)}</div>
-                    <div class="fp-online-dot ${f.online ? 'is-online' : ''}">${f.online ? '\u25cf Online' : '\u25cb Offline'}</div>
+                    <div class="fp-online-dot ${statusClass}">${statusText}</div>
                 </div>
             </div>
-            <button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>
+            ${actionBtn}
         </div>`;
     };
 
@@ -141,6 +154,8 @@ function renderOlFriendsList() {
                     if (f) {
                         f.online = doc.data().online || false;
                         if (doc.data().avatar) f.avatar = doc.data().avatar;
+                        // FIX: Track activeMatch for spectating
+                        f.activeMatch = doc.data().activeMatch || null;
                     }
                 });
                 listEl.innerHTML = friendsData.map(buildItem).join('');
@@ -384,7 +399,7 @@ function startFriendsListener() {
                 const d = doc.data();
                 const fuid = d.uids.find(u => u !== currentUser.uid);
                 if (d.status === 'accepted') {
-                    friendsData.push({ id: doc.id, uid: fuid, username: d.usernames[fuid], online: false });
+                    friendsData.push({ id: doc.id, uid: fuid, username: d.usernames[fuid], online: false, activeMatch: null });
                 } else if (d.status === 'pending' && d.requester !== currentUser.uid) {
                     pendingData.push({ id: doc.id, uid: d.requester, username: d.requesterUsername });
                 }
@@ -432,17 +447,30 @@ function renderFriendsList() {
             const avatarHtml = f.avatar ?
                 `<div class="fp-avatar" style="background-image:url(${f.avatar});background-size:cover;background-position:center;background-color:transparent;color:transparent;">${f.username[0].toUpperCase()}</div>` :
                 `<div class="fp-avatar">${f.username[0].toUpperCase()}</div>`;
+
+            // FIX: Show Watch button if friend is in a match
+            let primaryAction;
+            if (f.activeMatch) {
+                primaryAction = `<button class="fp-btn fp-challenge" onclick="spectateMatch('${aEsc(f.activeMatch)}')" title="Watch live game">\uD83D\uDC41 Watch</button>`;
+            } else {
+                primaryAction = `<button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>`;
+            }
+
+            // FIX: Show "In Match" status
+            const statusText = f.activeMatch ? '\uD83D\uDFE2 In Match' : (f.online ? '\u25cf Online' : '\u25cb Offline');
+            const statusClass = f.activeMatch ? 'is-online' : (f.online ? 'is-online' : '');
+
             return `
             <div class="fp-friend-item">
                 <div class="fp-friend-info" style="cursor:pointer;" onclick="showUserProfile('${f.uid}')">
                     ${avatarHtml}
                     <div>
                         <div class="fp-friend-name">${hEsc(f.username)}</div>
-                        <div class="fp-online-dot ${f.online ? 'is-online' : ''}">${f.online ? '\u25cf Online' : '\u25cb Offline'}</div>
+                        <div class="fp-online-dot ${statusClass}">${statusText}</div>
                     </div>
                 </div>
                 <div class="fp-friend-actions">
-                    <button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>
+                    ${primaryAction}
                     <button class="fp-btn fp-decline" onclick="removeFriend('${f.id}','${aEsc(f.username)}')" title="Remove">\u2715</button>
                 </div>
             </div>`;
@@ -460,6 +488,8 @@ function renderFriendsList() {
                         if (f) {
                             f.online = doc.data().online || false;
                             if (doc.data().avatar) f.avatar = doc.data().avatar;
+                            // FIX: Track activeMatch for spectating
+                            f.activeMatch = doc.data().activeMatch || null;
                         }
                     });
                     if (listEl) listEl.innerHTML = buildList(friendsData);
@@ -608,7 +638,6 @@ function dismissToastId(tId) {
 
 function joinAcceptedChallenge(tId, roomCode) {
     dismissToastId(tId);
-    // ensure modals or panels are closed.
     if (typeof closeFriendsPanel === 'function') closeFriendsPanel();
     const popup = document.getElementById('ol-friends-popup');
     if (popup) popup.classList.remove('open');
@@ -667,6 +696,7 @@ function dismissToast(docId) {
     activeToasts.delete(docId);
 }
 
+// FIX: acceptChallenge now handles spectator connections like createRoom
 async function acceptChallenge(docId, fromUsername) {
     dismissToast(docId);
     const rc = genCode();
@@ -686,10 +716,29 @@ async function acceptChallenge(docId, fromUsername) {
     p.on('open', () => {
         setOlStatus('Waiting for <strong>' + hEsc(fromUsername) + '</strong> to connect\u2026', 'success');
     });
+
+    // FIX: Unified connection handler — same pattern as createRoom
     p.on('connection', c => {
-        if (conn) { c.close(); return; }
-        conn = c; myColor = 'w'; flipped = false; initConn();
+        c.once('data', d => {
+            if (d.type === 'spectate') {
+                spectators.push(c);
+                updateSpectatorCount();
+                syncSpectator(c);
+                c.on('close', () => {
+                    spectators = spectators.filter(s => s !== c);
+                    updateSpectatorCount();
+                });
+            } else if (d.type === 'hello') {
+                if (conn) { c.close(); return; }
+                conn = c;
+                myColor = 'w';
+                flipped = false;
+                initConn();
+                handleNet(d);
+            }
+        });
     });
+
     p.on('error', e => {
         setOlStatus('Error: ' + e.type, 'error');
         document.getElementById('btn-create').disabled = false;
@@ -748,6 +797,22 @@ async function findRandomMatch() {
                     document.getElementById('btn-create').disabled = false;
                     document.getElementById('btn-join').disabled = false;
                 });
+
+                // FIX: Accept spectators even when joining as Black in random match
+                p.on('connection', c => {
+                    c.once('data', d => {
+                        if (d.type === 'spectate') {
+                            spectators.push(c);
+                            updateSpectatorCount();
+                            syncSpectator(c);
+                            c.on('close', () => {
+                                spectators = spectators.filter(s => s !== c);
+                                updateSpectatorCount();
+                            });
+                        }
+                    });
+                });
+
                 p.on('error', e => {
                     statusEl.innerHTML = 'Connection error. Try again.';
                     statusEl.className = 'online-status error';
@@ -775,17 +840,35 @@ async function findRandomMatch() {
             p.on('open', () => {
                 statusEl.innerHTML = 'Waiting for a random opponent\u2026';
             });
+
+            // FIX: Unified handler — accept both players and spectators
             p.on('connection', c => {
-                if (conn) { c.close(); return; }
-                conn = c; myColor = 'w'; flipped = false;
-                db.collection('matchmaking').doc(docRef.id).delete().catch(() => { });
-                if (randomSearchUnsub) { randomSearchUnsub(); randomSearchUnsub = null; }
-                document.getElementById('btn-random').disabled = false;
-                document.getElementById('btn-create').disabled = false;
-                document.getElementById('btn-join').disabled = false;
-                statusEl.style.display = 'none';
-                initConn();
+                c.once('data', d => {
+                    if (d.type === 'spectate') {
+                        spectators.push(c);
+                        updateSpectatorCount();
+                        syncSpectator(c);
+                        c.on('close', () => {
+                            spectators = spectators.filter(s => s !== c);
+                            updateSpectatorCount();
+                        });
+                    } else if (d.type === 'hello') {
+                        if (conn) { c.close(); return; }
+                        conn = c;
+                        myColor = 'w';
+                        flipped = false;
+                        db.collection('matchmaking').doc(docRef.id).delete().catch(() => { });
+                        if (randomSearchUnsub) { randomSearchUnsub(); randomSearchUnsub = null; }
+                        document.getElementById('btn-random').disabled = false;
+                        document.getElementById('btn-create').disabled = false;
+                        document.getElementById('btn-join').disabled = false;
+                        statusEl.style.display = 'none';
+                        initConn();
+                        handleNet(d);
+                    }
+                });
             });
+
             p.on('error', e => {
                 statusEl.innerHTML = 'Error: ' + e.type;
                 statusEl.className = 'online-status error';
@@ -811,7 +894,7 @@ async function findRandomMatch() {
                     document.getElementById('btn-join').disabled = false;
                     cleanupPeer();
                 }
-            }, 180000); // Wait 3 minutes before abandoning
+            }, 180000);
         }
     } catch (e) {
         console.error("Matchmaking error:", e);
@@ -846,20 +929,9 @@ function calculateElo(myElo, oppElo, outcome, accuracy = 50) {
     const K = 32;
     const expected = 1 / (1 + Math.pow(10, (oppElo - myElo) / 400));
     const score = outcome === 'win' ? 1 : outcome === 'loss' ? 0 : 0.5;
-
-    // Base Elo change
     let change = K * (score - expected);
-
-    // Performance modifier based on accuracy (0 to 100)
-    // 50 accuracy is neutral. Above 50 means fewer blunders, granting bonus points.
-    // Scale modifier to be max +/- 5 Elo points
     let perfModifier = (accuracy - 50) / 10;
-
-    if (outcome === 'draw' && accuracy >= 80) {
-        // Significantly reward high accuracy draws
-        perfModifier += 3;
-    }
-
+    if (outcome === 'draw' && accuracy >= 80) perfModifier += 3;
     let newElo = Math.round(myElo + change + perfModifier);
     return Math.max(100, Math.min(3500, newElo));
 }
@@ -867,18 +939,15 @@ function calculateElo(myElo, oppElo, outcome, accuracy = 50) {
 function recordGameResult(outcome, oppElo = 225, accuracy = 50) {
     if (!currentUser) return null;
     const field = outcome === 'win' ? 'wins' : outcome === 'loss' ? 'losses' : 'draws';
-
     const myElo = currentProfile && currentProfile.elo ? currentProfile.elo : 225;
     const newElo = calculateElo(myElo, oppElo, outcome, accuracy);
     const eloChange = newElo - myElo;
     if (currentProfile) currentProfile.elo = newElo;
-
     db.collection('users').doc(currentUser.uid).update({
         [field]: firebase.firestore.FieldValue.increment(1),
         gamesPlayed: firebase.firestore.FieldValue.increment(1),
         elo: newElo
     }).catch(() => { });
-
     return { newElo, eloChange };
 }
 
@@ -894,10 +963,10 @@ async function loadStats() {
     } catch (e) { el.innerHTML = ''; }
 }
 
+// FIX: showUserProfile now checks for activeMatch and shows Watch button
 async function showUserProfile(uid) {
     if (!uid) return;
 
-    // Prevent closing the modal immediately if it's opened via a click event
     if (window.event && window.event.stopPropagation) {
         window.event.stopPropagation();
     }
@@ -910,20 +979,34 @@ async function showUserProfile(uid) {
     const elo = d.elo || 225;
     const w = d.wins || 0, l = d.losses || 0, dr = d.draws || 0;
     const bio = d.bio || "No bio set yet.";
+    const activeMatch = d.activeMatch || null;
 
     // Check friend status
     let actionHtml = '';
     if (currentUser && uid !== currentUser.uid) {
         const fid = [currentUser.uid, uid].sort().join('_');
         const fDoc = await db.collection('friends').doc(fid).get();
+
+        // FIX: Watch button if user is in an active match
+        let watchBtn = '';
+        if (activeMatch) {
+            watchBtn = '<button class="fp-btn fp-challenge" onclick="spectateMatch(\'' + aEsc(activeMatch) + '\')" style="margin-right:6px;">\uD83D\uDC41 Watch Live</button>';
+        }
+
         if (fDoc.exists) {
             const st = fDoc.data().status;
-            if (st === 'accepted') actionHtml = '<button class="fp-btn fp-challenge" onclick="challengeFriend(\'' + uid + '\',\'' + aEsc(uname) + '\')">⚔ Play</button>';
-            else if (fDoc.data().requester === currentUser.uid) actionHtml = '<span class="fp-pill pending">Sent</span>';
-            else actionHtml = '<button class="fp-btn fp-accept" onclick="acceptFriendReq(\'' + fDoc.id + '\')">✓ Accept</button>';
+            if (st === 'accepted') actionHtml = watchBtn + '<button class="fp-btn fp-challenge" onclick="challengeFriend(\'' + uid + '\',\'' + aEsc(uname) + '\')">⚔ Play</button>';
+            else if (fDoc.data().requester === currentUser.uid) actionHtml = watchBtn + '<span class="fp-pill pending">Sent</span>';
+            else actionHtml = watchBtn + '<button class="fp-btn fp-accept" onclick="acceptFriendReq(\'' + fDoc.id + '\')">✓ Accept</button>';
         } else {
-            actionHtml = '<button class="fp-btn fp-add" onclick="sendFriendRequest(\'' + uid + '\',\'' + aEsc(uname) + '\')">+ Add Friend</button>';
+            actionHtml = watchBtn + '<button class="fp-btn fp-add" onclick="sendFriendRequest(\'' + uid + '\',\'' + aEsc(uname) + '\')">+ Add Friend</button>';
         }
+    }
+
+    // FIX: Show "In Match" badge
+    let matchBadge = '';
+    if (activeMatch) {
+        matchBadge = '<div style="background:#2e7d32;color:#fff;padding:4px 12px;border-radius:20px;font-size:0.8rem;display:inline-block;margin-bottom:10px;">\uD83D\uDFE2 Currently in a match</div>';
     }
 
     let bioHtml = `
@@ -965,16 +1048,18 @@ async function showUserProfile(uid) {
         <div style="background:var(--bg-card);padding:20px;border-radius:12px;width:90%;max-width:320px;text-align:center;box-shadow:var(--shadow);">
             ${avatarHtml}
             <h2 style="margin:0 0 5px 0;font-size:1.4rem;">${hEsc(uname)}</h2>
-            <div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:15px;">
+            <div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:10px;">
                 <span style="color:#e08c32;font-weight:bold;margin-right:10px;">${getEloRank(elo)} (Elo ${elo})</span>
                 <span style="color:#4caf50;">${w}W</span> &middot; 
                 <span style="color:#f44336;">${l}L</span> &middot; 
                 <span style="color:#ffb300;">${dr}D</span>
             </div>
             
+            ${matchBadge}
+            
             ${bioHtml}
             
-            ${actionHtml ? `<div style="margin-bottom:15px;">${actionHtml}</div>` : ''}
+            ${actionHtml ? `<div style="margin-bottom:15px;display:flex;justify-content:center;gap:6px;flex-wrap:wrap;">${actionHtml}</div>` : ''}
             
             <div style="text-align:left;background:var(--bg-dark);padding:10px;border-radius:8px;">
                 <h4 style="margin:0 0 10px 0;font-size:0.9rem;color:var(--text-muted);">Recent Games (Coming Soon)</h4>
@@ -985,7 +1070,6 @@ async function showUserProfile(uid) {
         </div>
     `;
 
-    // We need to make sure the modal is displayed and position is relative so the close btn works
     elHtml.children[0].style.position = 'relative';
     elHtml.style.display = 'flex';
 }
@@ -1008,5 +1092,3 @@ async function saveProfileBio(uid) {
         showMsg('Failed to update bio.');
     }
 }
-
-
