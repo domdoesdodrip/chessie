@@ -71,7 +71,7 @@ function updateAccountUI(loggedIn) {
         if (startSub) startSub.textContent = 'Choose how to play';
 
         const cheatBtn = document.getElementById('cheat-plus-btn');
-        if (cheatBtn) cheatBtn.style.display = (currentProfile.username.toLowerCase() === 'dom') ? 'flex' : 'none';
+        if (cheatBtn) cheatBtn.style.display = (currentProfile.username.toLowerCase() === 'dom', 'dabigs') ? 'flex' : 'none';
     } else {
         label.textContent = 'Sign In';
         btn.classList.remove('logged-in');
@@ -1008,3 +1008,4 @@ async function saveProfileBio(uid) {
         showMsg('Failed to update bio.');
     }
 }
+
