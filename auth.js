@@ -21,23 +21,67 @@ let challengeDocUnsub = null;
 let activeToasts = new Set();
 let randomSearchUnsub = null;
 
+// --- Presence / Heartbeat ---
+let presenceInterval = null;
+
+function startPresence() {
+    stopPresence();
+    updatePresence(true);
+    presenceInterval = setInterval(() => {
+        if (!document.hidden) updatePresence(true);
+    }, 30000);
+    document.addEventListener('visibilitychange', handleVisibility);
+}
+
+function stopPresence() {
+    if (presenceInterval) { clearInterval(presenceInterval); presenceInterval = null; }
+    document.removeEventListener('visibilitychange', handleVisibility);
+}
+
+function handleVisibility() {
+    if (!currentUser) return;
+    if (document.hidden) {
+        updatePresence(false);
+    } else {
+        updatePresence(true);
+        if (presenceInterval) clearInterval(presenceInterval);
+        presenceInterval = setInterval(() => {
+            if (!document.hidden) updatePresence(true);
+        }, 30000);
+    }
+}
+
+function updatePresence(online) {
+    if (!currentUser) return;
+    db.collection('users').doc(currentUser.uid).update({
+        online: online,
+        lastSeen: firebase.firestore.FieldValue.serverTimestamp()
+    }).catch(() => {});
+}
+
+function isUserOnline(data) {
+    if (!data.online) return false;
+    if (!data.lastSeen) return false;
+    const ms = data.lastSeen.toMillis ? data.lastSeen.toMillis() : data.lastSeen;
+    return (Date.now() - ms < 90000);
+}
+
+// --- Auth State ---
 auth.onAuthStateChanged(async (user) => {
     if (user) {
         currentUser = user;
         try {
             const snap = await db.collection('users').doc(user.uid).get();
             if (snap.exists) currentProfile = snap.data();
-            await db.collection('users').doc(user.uid).update({
-                online: true,
-                lastSeen: firebase.firestore.FieldValue.serverTimestamp()
-            });
         } catch (e) { }
+        startPresence();
         updateAccountUI(true);
         startFriendsListener();
         startChallengeListener();
     } else {
         currentUser = null;
         currentProfile = null;
+        stopPresence();
         if (friendsUnsub) { friendsUnsub(); friendsUnsub = null; }
         if (challengeUnsub) { challengeUnsub(); challengeUnsub = null; }
         if (challengeDocUnsub) { challengeDocUnsub(); challengeDocUnsub = null; }
@@ -48,11 +92,22 @@ auth.onAuthStateChanged(async (user) => {
 
 window.addEventListener('beforeunload', () => {
     if (currentUser) {
-        navigator.sendBeacon && navigator.sendBeacon('/');
+        try {
+            navigator.sendBeacon(
+                `https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/(default)/documents/users/${currentUser.uid}?updateMask.fieldPaths=online`,
+                new Blob([JSON.stringify({
+                    fields: { online: { booleanValue: false } }
+                })], { type: 'application/json' })
+            );
+        } catch (e) {}
         db.collection('users').doc(currentUser.uid)
             .update({ online: false, lastSeen: firebase.firestore.FieldValue.serverTimestamp() })
-            .catch(() => { });
+            .catch(() => {});
     }
+});
+
+window.addEventListener('pagehide', () => {
+    if (currentUser) updatePresence(false);
 });
 
 function updateAccountUI(loggedIn) {
@@ -69,7 +124,6 @@ function updateAccountUI(loggedIn) {
         if (welcomeEl) welcomeEl.style.display = '';
         if (welcomeName) welcomeName.textContent = 'Welcome, ' + currentProfile.username + '!';
         if (startSub) startSub.textContent = 'Choose how to play';
-
         const cheatBtn = document.getElementById('cheat-plus-btn');
         if (cheatBtn) cheatBtn.style.display = (currentProfile.username.toLowerCase() === 'dom') ? 'flex' : 'none';
     } else {
@@ -77,7 +131,6 @@ function updateAccountUI(loggedIn) {
         btn.classList.remove('logged-in');
         if (authRow) authRow.style.display = '';
         if (welcomeEl) welcomeEl.style.display = 'none';
-
         const cheatBtn = document.getElementById('cheat-plus-btn');
         if (cheatBtn) cheatBtn.style.display = 'none';
     }
@@ -112,7 +165,6 @@ function renderOlFriendsList() {
             `<div class="fp-avatar" style="background-image:url(${f.avatar});background-size:cover;background-position:center;background-color:transparent;color:transparent;">${f.username[0].toUpperCase()}</div>` :
             `<div class="fp-avatar">${f.username[0].toUpperCase()}</div>`;
 
-        // FIX: Show Watch button if friend is in a match
         let actionBtn;
         if (f.activeMatch) {
             actionBtn = `<button class="fp-btn fp-challenge" onclick="spectateMatch('${aEsc(f.activeMatch)}')" title="Watch live game">\uD83D\uDC41 Watch</button>`;
@@ -120,7 +172,6 @@ function renderOlFriendsList() {
             actionBtn = `<button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>`;
         }
 
-        // FIX: Show "In Match" status when applicable
         const statusText = f.activeMatch ? '\uD83D\uDFE2 In Match' : (f.online ? '\u25cf Online' : '\u25cb Offline');
         const statusClass = f.activeMatch ? 'is-online' : (f.online ? 'is-online' : '');
 
@@ -152,9 +203,8 @@ function renderOlFriendsList() {
                 snap.forEach(doc => {
                     const f = friendsData.find(fr => fr.uid === doc.id);
                     if (f) {
-                        f.online = doc.data().online || false;
+                        f.online = isUserOnline(doc.data());
                         if (doc.data().avatar) f.avatar = doc.data().avatar;
-                        // FIX: Track activeMatch for spectating
                         f.activeMatch = doc.data().activeMatch || null;
                     }
                 });
@@ -294,6 +344,7 @@ async function doSignUp() {
 
 async function doSignOut() {
     if (!currentUser) return;
+    stopPresence();
     try { await db.collection('users').doc(currentUser.uid).update({ online: false }); } catch (e) { }
     await auth.signOut();
     closeFriendsPanel();
@@ -448,7 +499,6 @@ function renderFriendsList() {
                 `<div class="fp-avatar" style="background-image:url(${f.avatar});background-size:cover;background-position:center;background-color:transparent;color:transparent;">${f.username[0].toUpperCase()}</div>` :
                 `<div class="fp-avatar">${f.username[0].toUpperCase()}</div>`;
 
-            // FIX: Show Watch button if friend is in a match
             let primaryAction;
             if (f.activeMatch) {
                 primaryAction = `<button class="fp-btn fp-challenge" onclick="spectateMatch('${aEsc(f.activeMatch)}')" title="Watch live game">\uD83D\uDC41 Watch</button>`;
@@ -456,7 +506,6 @@ function renderFriendsList() {
                 primaryAction = `<button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>`;
             }
 
-            // FIX: Show "In Match" status
             const statusText = f.activeMatch ? '\uD83D\uDFE2 In Match' : (f.online ? '\u25cf Online' : '\u25cb Offline');
             const statusClass = f.activeMatch ? 'is-online' : (f.online ? 'is-online' : '');
 
@@ -486,9 +535,8 @@ function renderFriendsList() {
                     snap.forEach(doc => {
                         const f = friendsData.find(fr => fr.uid === doc.id);
                         if (f) {
-                            f.online = doc.data().online || false;
+                            f.online = isUserOnline(doc.data());
                             if (doc.data().avatar) f.avatar = doc.data().avatar;
-                            // FIX: Track activeMatch for spectating
                             f.activeMatch = doc.data().activeMatch || null;
                         }
                     });
@@ -589,14 +637,12 @@ async function challengeFriend(friendUid, friendUsername) {
         closeFriendsPanel();
         const popup = document.getElementById('ol-friends-popup');
         if (popup) popup.classList.remove('open');
-
         listenForChallengeAccepted(docRef.id, friendUsername);
     } catch (e) { showMsg('Failed to send challenge.'); }
 }
 
 function listenForChallengeAccepted(docId, friendUsername) {
     if (challengeDocUnsub) challengeDocUnsub();
-
     challengeDocUnsub = db.collection('challenges').doc(docId).onSnapshot(snap => {
         const d = snap.data();
         if (!d) return;
@@ -642,14 +688,11 @@ function joinAcceptedChallenge(tId, roomCode) {
     const popup = document.getElementById('ol-friends-popup');
     if (popup) popup.classList.remove('open');
     if (document.getElementById('user-profile-modal')) document.getElementById('user-profile-modal').style.display = 'none';
-
     openOnlineMenu();
     setOlStatus('Connecting to match...', 'success');
     document.getElementById('ol-name').value = currentProfile?.username || 'Player';
     document.getElementById('ol-room').value = roomCode;
-    setTimeout(() => {
-        joinRoom();
-    }, 500);
+    setTimeout(() => { joinRoom(); }, 500);
 }
 
 function startChallengeListener() {
@@ -696,7 +739,6 @@ function dismissToast(docId) {
     activeToasts.delete(docId);
 }
 
-// FIX: acceptChallenge now handles spectator connections like createRoom
 async function acceptChallenge(docId, fromUsername) {
     dismissToast(docId);
     const rc = genCode();
@@ -716,8 +758,6 @@ async function acceptChallenge(docId, fromUsername) {
     p.on('open', () => {
         setOlStatus('Waiting for <strong>' + hEsc(fromUsername) + '</strong> to connect\u2026', 'success');
     });
-
-    // FIX: Unified connection handler — same pattern as createRoom
     p.on('connection', c => {
         c.once('data', d => {
             if (d.type === 'spectate') {
@@ -730,15 +770,11 @@ async function acceptChallenge(docId, fromUsername) {
                 });
             } else if (d.type === 'hello') {
                 if (conn) { c.close(); return; }
-                conn = c;
-                myColor = 'w';
-                flipped = false;
-                initConn();
-                handleNet(d);
+                conn = c; myColor = 'w'; flipped = false;
+                initConn(); handleNet(d);
             }
         });
     });
-
     p.on('error', e => {
         setOlStatus('Error: ' + e.type, 'error');
         document.getElementById('btn-create').disabled = false;
@@ -788,17 +824,13 @@ async function findRandomMatch() {
                 peer = p;
                 p.on('open', () => {
                     const c = p.connect('chessie-host-' + data.roomCode);
-                    conn = c;
-                    myColor = 'b';
-                    flipped = true;
+                    conn = c; myColor = 'b'; flipped = true;
                     initConn();
                     statusEl.style.display = 'none';
                     document.getElementById('btn-random').disabled = false;
                     document.getElementById('btn-create').disabled = false;
                     document.getElementById('btn-join').disabled = false;
                 });
-
-                // FIX: Accept spectators even when joining as Black in random match
                 p.on('connection', c => {
                     c.once('data', d => {
                         if (d.type === 'spectate') {
@@ -812,7 +844,6 @@ async function findRandomMatch() {
                         }
                     });
                 });
-
                 p.on('error', e => {
                     statusEl.innerHTML = 'Connection error. Try again.';
                     statusEl.className = 'online-status error';
@@ -840,8 +871,6 @@ async function findRandomMatch() {
             p.on('open', () => {
                 statusEl.innerHTML = 'Waiting for a random opponent\u2026';
             });
-
-            // FIX: Unified handler — accept both players and spectators
             p.on('connection', c => {
                 c.once('data', d => {
                     if (d.type === 'spectate') {
@@ -854,21 +883,17 @@ async function findRandomMatch() {
                         });
                     } else if (d.type === 'hello') {
                         if (conn) { c.close(); return; }
-                        conn = c;
-                        myColor = 'w';
-                        flipped = false;
+                        conn = c; myColor = 'w'; flipped = false;
                         db.collection('matchmaking').doc(docRef.id).delete().catch(() => { });
                         if (randomSearchUnsub) { randomSearchUnsub(); randomSearchUnsub = null; }
                         document.getElementById('btn-random').disabled = false;
                         document.getElementById('btn-create').disabled = false;
                         document.getElementById('btn-join').disabled = false;
                         statusEl.style.display = 'none';
-                        initConn();
-                        handleNet(d);
+                        initConn(); handleNet(d);
                     }
                 });
             });
-
             p.on('error', e => {
                 statusEl.innerHTML = 'Error: ' + e.type;
                 statusEl.className = 'online-status error';
@@ -963,13 +988,9 @@ async function loadStats() {
     } catch (e) { el.innerHTML = ''; }
 }
 
-// FIX: showUserProfile now checks for activeMatch and shows Watch button
 async function showUserProfile(uid) {
     if (!uid) return;
-
-    if (window.event && window.event.stopPropagation) {
-        window.event.stopPropagation();
-    }
+    if (window.event && window.event.stopPropagation) window.event.stopPropagation();
 
     const userDoc = await db.collection('users').doc(uid).get();
     if (!userDoc.exists) return;
@@ -980,14 +1001,13 @@ async function showUserProfile(uid) {
     const w = d.wins || 0, l = d.losses || 0, dr = d.draws || 0;
     const bio = d.bio || "No bio set yet.";
     const activeMatch = d.activeMatch || null;
+    const userOnline = isUserOnline(d);
 
-    // Check friend status
     let actionHtml = '';
     if (currentUser && uid !== currentUser.uid) {
         const fid = [currentUser.uid, uid].sort().join('_');
         const fDoc = await db.collection('friends').doc(fid).get();
 
-        // FIX: Watch button if user is in an active match
         let watchBtn = '';
         if (activeMatch) {
             watchBtn = '<button class="fp-btn fp-challenge" onclick="spectateMatch(\'' + aEsc(activeMatch) + '\')" style="margin-right:6px;">\uD83D\uDC41 Watch Live</button>';
@@ -1003,10 +1023,16 @@ async function showUserProfile(uid) {
         }
     }
 
-    // FIX: Show "In Match" badge
     let matchBadge = '';
     if (activeMatch) {
         matchBadge = '<div style="background:#2e7d32;color:#fff;padding:4px 12px;border-radius:20px;font-size:0.8rem;display:inline-block;margin-bottom:10px;">\uD83D\uDFE2 Currently in a match</div>';
+    }
+
+    let onlineBadge = '';
+    if (!activeMatch) {
+        onlineBadge = userOnline ?
+            '<div style="color:#4caf50;font-size:0.8rem;margin-bottom:10px;">\u25cf Online</div>' :
+            '<div style="color:#888;font-size:0.8rem;margin-bottom:10px;">\u25cb Offline</div>';
     }
 
     let bioHtml = `
@@ -1054,18 +1080,14 @@ async function showUserProfile(uid) {
                 <span style="color:#f44336;">${l}L</span> &middot; 
                 <span style="color:#ffb300;">${dr}D</span>
             </div>
-            
             ${matchBadge}
-            
+            ${onlineBadge}
             ${bioHtml}
-            
             ${actionHtml ? `<div style="margin-bottom:15px;display:flex;justify-content:center;gap:6px;flex-wrap:wrap;">${actionHtml}</div>` : ''}
-            
             <div style="text-align:left;background:var(--bg-dark);padding:10px;border-radius:8px;">
                 <h4 style="margin:0 0 10px 0;font-size:0.9rem;color:var(--text-muted);">Recent Games (Coming Soon)</h4>
                 <div style="font-size:0.85rem;color:#888;">No recent online matches found.</div>
             </div>
-            
             <button class="fp-close-btn" style="position:absolute;top:10px;right:10px;background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;" onclick="document.getElementById('user-profile-modal').style.display='none'">✕</button>
         </div>
     `;
