@@ -715,7 +715,6 @@ async function findRandomMatch() {
     try {
         const waiting = await db.collection('matchmaking')
             .where('status', '==', 'waiting')
-            .orderBy('createdAt')
             .limit(5)
             .get();
 
@@ -812,9 +811,10 @@ async function findRandomMatch() {
                     document.getElementById('btn-join').disabled = false;
                     cleanupPeer();
                 }
-            }, 180000);
+            }, 180000); // Wait 3 minutes before abandoning
         }
     } catch (e) {
+        console.error("Matchmaking error:", e);
         statusEl.innerHTML = 'Error finding match. Try room code instead.';
         statusEl.className = 'online-status error';
         document.getElementById('btn-random').disabled = false;
@@ -1008,4 +1008,3 @@ async function saveProfileBio(uid) {
         showMsg('Failed to update bio.');
     }
 }
-
