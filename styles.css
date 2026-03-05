@@ -3134,3 +3134,57 @@ body {
         transform: rotate(360deg);
     }
 }
+
+/* --- Spectator Styles --- */
+.spectator-count {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #fff;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.spectator-banner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    background: rgba(90, 100, 200, 0.9);
+    color: #fff;
+    text-align: center;
+    font-size: 0.75rem;
+    font-weight: 800;
+    padding: 4px 0;
+    letter-spacing: 2px;
+    z-index: 150;
+    display: none;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+}
+
+.spectate-match-btn {
+    background: #5a6acd;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-weight: 700;
+    font-size: 0.8rem;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.15s;
+}
+
+.spectate-match-btn:hover {
+    background: #6a7aed;
+    transform: translateY(-1px);
+}
