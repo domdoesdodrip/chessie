@@ -812,7 +812,7 @@ async function findRandomMatch() {
                     document.getElementById('btn-join').disabled = false;
                     cleanupPeer();
                 }
-            }, 60000);
+            }, 180000);
         }
     } catch (e) {
         statusEl.innerHTML = 'Error finding match. Try room code instead.';
@@ -1008,3 +1008,4 @@ async function saveProfileBio(uid) {
         showMsg('Failed to update bio.');
     }
 }
+
