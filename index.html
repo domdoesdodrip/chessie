@@ -9,6 +9,9 @@
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9823;</text></svg>">
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
     <link rel="stylesheet" href="styles.css">
 </head>
 
@@ -18,7 +21,11 @@
         <div class="start-panel">
             <div class="start-logo">♟</div>
             <div class="start-title">Chessie</div>
-            <div class="start-sub">Choose how to play</div>
+            <div class="start-sub" id="start-sub">Choose how to play</div>
+            <!-- Shown when logged in -->
+            <div id="start-welcome" class="start-welcome" style="display:none">
+                <div class="start-welcome-name" id="start-welcome-name"></div>
+            </div>
             <button class="start-btn sb-local" onclick="startLocal()"><svg viewBox="0 0 24 24">
                     <path
                         d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
@@ -31,6 +38,24 @@
                     <path
                         d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
                 </svg>Play Online</button>
+            <div class="start-auth-row" id="start-auth-row">
+                <button class="start-btn sb-signin" onclick="openAuthPanel();showAuthTab('login')">Sign In</button>
+                <button class="start-btn sb-signup" onclick="openAuthPanel();showAuthTab('signup')">Sign Up</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="auth-loading-overlay" class="auth-loading-overlay active">
+        <div class="auth-loading-spinner"></div>
+    </div>
+
+    <!-- Login Success Popup -->
+    <div id="login-success-overlay" class="overlay">
+        <div class="modal-box login-success-box">
+            <div class="ls-check">✔</div>
+            <h3>Successfully Logged in!</h3>
+            <div class="ls-username" id="ls-username"></div>
+            <button class="auth-submit-btn" onclick="dismissLoginSuccess()">Continue</button>
         </div>
     </div>
 
@@ -39,6 +64,14 @@
                 <path d="M3 3h7v2H5v5H3V3zm11 0h7v7h-2V5h-5V3zM3 14h2v5h5v2H3v-7zm18 0v7h-7v-2h5v-5h2z" />
             </svg>View</button>
         <div class="spacer"></div>
+        <button class="top-btn account-top-btn" id="account-btn" onclick="toggleAccountPanel()">
+            <svg viewBox="0 0 24 24">
+                <path
+                    d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" />
+            </svg>
+            <span id="account-btn-label">Sign In</span>
+            <span class="friends-badge" id="friends-badge" style="display:none">0</span>
+        </button>
         <div class="plus-menu-wrap" id="plus-wrap">
             <button class="plus-btn" id="plus-btn" onclick="togglePlusMenu(event)"><span
                     class="plus-icon">+</span></button>
@@ -83,6 +116,68 @@
             </div>
         </div>
     </div>
+    <!-- Auth Overlay -->
+    <div id="auth-overlay">
+        <div class="auth-panel">
+            <div class="auth-header">
+                <div class="auth-logo">♟</div>
+                <div class="auth-title">Chessie Account</div>
+                <div class="auth-sub">Sign in to add friends &amp; play matches</div>
+            </div>
+            <div class="auth-tabs">
+                <button class="auth-tab-btn active" data-tab="login" onclick="showAuthTab('login')">Sign In</button>
+                <button class="auth-tab-btn" data-tab="signup" onclick="showAuthTab('signup')">Create Account</button>
+            </div>
+            <div id="auth-error" class="auth-error" style="display:none"></div>
+            <div id="auth-login-form">
+                <input class="auth-field" id="login-identity" type="text" placeholder="Username or Email"
+                    autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()">
+                <input class="auth-field" id="login-password" type="password" placeholder="Password"
+                    autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+                <button class="auth-submit-btn" id="auth-login-btn" onclick="doLogin()">Sign In</button>
+            </div>
+            <div id="auth-signup-form" style="display:none">
+                <input class="auth-field" id="signup-username" type="text" placeholder="Username (3-16 chars)"
+                    maxlength="16" autocomplete="username">
+                <input class="auth-field" id="signup-email" type="email" placeholder="Email (optional)"
+                    autocomplete="email">
+                <input class="auth-field" id="signup-password" type="password" placeholder="Password (min 6 chars)"
+                    autocomplete="new-password" onkeydown="if(event.key==='Enter')doSignUp()">
+                <button class="auth-submit-btn" id="auth-signup-btn" onclick="doSignUp()">Create Account</button>
+            </div>
+            <button class="auth-close-btn" onclick="closeAuthPanel()">Close</button>
+        </div>
+    </div>
+
+    <!-- Friends Panel -->
+    <div id="friends-overlay">
+        <div class="friends-panel">
+            <div class="fp-header">
+                <div class="fp-profile-row">
+                    <div class="fp-avatar fp-avatar-lg" id="fp-avatar-main">?</div>
+                    <div>
+                        <div class="fp-username-main" id="fp-username">—</div>
+                        <div class="fp-online-dot is-online">● Online</div>
+                    </div>
+                    <button class="fp-signout-btn" onclick="doSignOut()">Sign Out</button>
+                </div>
+                <button class="fp-close-btn" onclick="closeFriendsPanel()">✕</button>
+            </div>
+            <div class="fp-section-label">Find Players</div>
+            <input class="fp-search" id="fp-search" type="text" placeholder="Search by username…"
+                oninput="onSearchInput()">
+            <div id="fp-search-result" style="display:none"></div>
+            <div id="fp-pending-section" style="display:none">
+                <div class="fp-section-label" style="color:#e08c32">Friend Requests</div>
+                <div id="fp-pending-list"></div>
+            </div>
+            <div class="fp-section-label">Friends</div>
+            <div id="fp-friends-list">
+                <div class="fp-empty">No friends yet. Search above!</div>
+            </div>
+        </div>
+    </div>
+
     <div id="modal-overlay" class="overlay">
         <div class="modal-box">
             <h3 id="modal-text">Confirm?</h3>
@@ -133,7 +228,7 @@
                 <div class="bot-stars">🎓</div>
                 <div class="bot-info">
                     <h3>Coach</h3>
-                    <p>Adjusts to your playstyle</p><span class="bot-elo">Adaptive</span>
+                    <p>Learns your playstyle, always provides a challenge</p><span class="bot-elo">Adaptive</span>
                 </div>
             </div>
             <div class="bot-color-section" id="bot-color-section" style="display:none">
@@ -148,7 +243,7 @@
     </div>
 
     <div id="online-overlay">
-        <div class="online-panel">
+        <div class="online-panel" style="position:relative">
             <h2>Play Online</h2>
             <div class="online-subtitle">Challenge a friend via room code</div>
             <input class="online-field" id="ol-name" type="text" placeholder="Your name" maxlength="16">
@@ -156,8 +251,25 @@
             <div class="online-divider">or join</div>
             <input class="online-field" id="ol-room" type="text" placeholder="Room ID" maxlength="30">
             <button class="online-btn join" id="btn-join" onclick="joinRoom()">Join Room</button>
+            <div class="online-divider">or</div>
+            <button class="online-btn random" id="btn-random" onclick="findRandomMatch()">🎲 Random Opponent</button>
+            <div class="online-status" id="ol-random-status" style="display:none"></div>
             <div class="online-status" id="ol-status"></div>
             <button class="online-btn close" onclick="closeOnlineMenu()">Cancel</button>
+            <button class="ol-corner-btn" id="ol-friends-corner-btn" style="display:none"
+                onclick="toggleOlFriendsPopup()" title="Invite Friend">👥</button>
+        </div>
+        <div class="ol-friends-popup" id="ol-friends-popup">
+            <div class="ol-fp-header">
+                <span>Invite Friend</span>
+                <button class="ol-fp-close" onclick="toggleOlFriendsPopup()">✕</button>
+            </div>
+            <div class="ol-fp-search-wrap">
+                <input class="ol-fp-search" id="ol-fp-search" type="text" placeholder="Search & add by username…"
+                    maxlength="16" oninput="onOlFriendSearch()">
+            </div>
+            <div id="ol-fp-search-result" style="display:none"></div>
+            <div id="ol-fp-list" class="ol-fp-list"></div>
         </div>
     </div>
 
@@ -318,10 +430,7 @@
     </div>
 
     <script src="script.js"></script>
+    <script src="auth.js"></script>
 </body>
 
-
 </html>
-
-
-
