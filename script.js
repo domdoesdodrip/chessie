@@ -52,6 +52,8 @@ let isBot = false, botLevel = 1, botColor = 'b', botThinking = false;
 // --- Spectator Tracking ---
 let spectators = [];
 let isSpectating = false;
+// For bot/local spectating - host a peer so friends can watch
+let localHostPeer = null;
 
 const botNames = { 1: 'Bot 1', 2: 'Bot 2', 3: 'Bot 3', 4: 'Coach Bot' };
 const moveSound = new Audio('move.mp3');
@@ -70,7 +72,51 @@ const PST = {
 function getPST(t, r, c, col) { const tb = PST[t]; return tb ? (tb[col === 'w' ? r : 7 - r][c]) : 0; }
 
 function hideStart() { document.getElementById('start-screen').classList.add('gone'); }
-function startLocal() { hideStart(); isOnline = false; isBot = false; isSpectating = false; myColor = 'w'; flipped = false; oppName = 'Black'; scoreMe = 0; scoreOpp = 0; coachActive = false; updateCoachLayout(); resetGame(); }
+
+// --- Local Host Peer for Bot/Local Spectating ---
+function startLocalHostPeer() {
+    stopLocalHostPeer();
+    const rc = genCode();
+    const pid = 'chessie-local-' + rc;
+    localHostPeer = new Peer(pid, peerOpts);
+    localHostPeer.on('open', () => {
+        updateActiveMatch(pid);
+    });
+    localHostPeer.on('connection', c => {
+        c.once('data', d => {
+            if (d.type === 'spectate') {
+                spectators.push(c);
+                updateSpectatorCount();
+                syncSpectator(c);
+                c.on('close', () => {
+                    spectators = spectators.filter(s => s !== c);
+                    updateSpectatorCount();
+                });
+            } else {
+                c.close();
+            }
+        });
+    });
+    localHostPeer.on('error', () => {});
+}
+
+function stopLocalHostPeer() {
+    if (localHostPeer) {
+        try { localHostPeer.destroy(); } catch(e) {}
+        localHostPeer = null;
+    }
+    updateActiveMatch(null);
+    spectators = [];
+    updateSpectatorCount();
+}
+
+function startLocal() {
+    hideStart(); isOnline = false; isBot = false; isSpectating = false;
+    myColor = 'w'; flipped = false; oppName = 'Black';
+    scoreMe = 0; scoreOpp = 0; coachActive = false;
+    updateCoachLayout(); resetGame();
+    startLocalHostPeer();
+}
 
 function togglePlusMenu(e) { e.stopPropagation(); document.getElementById('plus-btn').classList.toggle('open'); document.getElementById('plus-dropdown').classList.toggle('open'); }
 function closePlusMenu() { document.getElementById('plus-btn').classList.remove('open'); document.getElementById('plus-dropdown').classList.remove('open'); }
@@ -80,7 +126,19 @@ let selectedBotLevel = 0;
 function openBotMenu() { document.getElementById('bot-overlay').style.display = 'flex'; document.getElementById('bot-color-section').style.display = 'none'; selectedBotLevel = 0; document.querySelectorAll('.bot-level-card').forEach(c => c.classList.remove('selected-level')); }
 function closeBotMenu() { document.getElementById('bot-overlay').style.display = 'none'; }
 function selectBotLevel(l) { selectedBotLevel = l; document.getElementById('bot-color-section').style.display = 'block'; document.querySelectorAll('.bot-level-card').forEach(c => c.classList.remove('selected-level')); document.getElementById('blc-' + l).classList.add('selected-level'); }
-function startBotGame(cc) { hideStart(); botLevel = selectedBotLevel; if (cc === 'r') cc = Math.random() < .5 ? 'w' : 'b'; myColor = cc; botColor = cc === 'w' ? 'b' : 'w'; flipped = myColor === 'b'; isBot = true; isOnline = false; isSpectating = false; oppName = botNames[botLevel]; document.getElementById('bot-overlay').style.display = 'none'; scoreMe = 0; scoreOpp = 0; coachActive = (botLevel === 4); updateCoachLayout(); resetGame(); if (botColor === 'w') setTimeout(botMove, 500); }
+function startBotGame(cc) {
+    hideStart(); botLevel = selectedBotLevel;
+    if (cc === 'r') cc = Math.random() < .5 ? 'w' : 'b';
+    myColor = cc; botColor = cc === 'w' ? 'b' : 'w'; flipped = myColor === 'b';
+    isBot = true; isOnline = false; isSpectating = false;
+    oppName = botNames[botLevel];
+    document.getElementById('bot-overlay').style.display = 'none';
+    scoreMe = 0; scoreOpp = 0;
+    coachActive = (botLevel === 4);
+    updateCoachLayout(); resetGame();
+    startLocalHostPeer();
+    if (botColor === 'w') setTimeout(botMove, 500);
+}
 
 function evaluateBoard(b) { let s = 0; const mv = { P: 100, N: 320, B: 330, R: 500, Q: 900, K: 20000 }; for (let r = 0; r < 8; r++)for (let c = 0; c < 8; c++) { const p = b[r][c]; if (!p) continue; const v = mv[p.type[1]] + getPST(p.type[1], r, c, p.type[0]); s += p.type[0] === 'w' ? v : -v; } return s; }
 function cloneBoard(b) { return b.map(row => row.map(cell => cell ? { type: cell.type, el: cell.el } : null)); }
@@ -91,12 +149,9 @@ function minimax(b, depth, alpha, beta, isMax, sEP, sCR) { if (depth === 0) retu
 
 function findBestAndPlayedEval(color, b, savedEP, savedCR, fR, fC, tR, tC) {
     const oEP = enPassantTarget, oCR = { ...castleRights };
-    enPassantTarget = savedEP;
-    Object.assign(castleRights, savedCR);
-    const moves = getAllMoves(color, b);
-    const isMax = color === 'w';
-    let bestVal = isMax ? -Infinity : Infinity;
-    let playedVal = null;
+    enPassantTarget = savedEP; Object.assign(castleRights, savedCR);
+    const moves = getAllMoves(color, b); const isMax = color === 'w';
+    let bestVal = isMax ? -Infinity : Infinity; let playedVal = null;
     for (const m of moves) {
         const mvr = b[m.fR][m.fC];
         const nEP = (mvr.type[1] === 'P' && Math.abs(m.tR - m.fR) === 2) ? { r: (m.fR + m.tR) / 2, c: m.fC } : null;
@@ -108,14 +163,13 @@ function findBestAndPlayedEval(color, b, savedEP, savedCR, fR, fC, tR, tC) {
         if (isMax ? val > bestVal : val < bestVal) bestVal = val;
         if (m.fR === fR && m.fC === fC && m.tR === tR && m.tC === tC) playedVal = val;
     }
-    enPassantTarget = oEP;
-    Object.assign(castleRights, oCR);
+    enPassantTarget = oEP; Object.assign(castleRights, oCR);
     if (!moves.length) bestVal = playedVal = evaluateBoard(b);
     if (playedVal === null) playedVal = bestVal;
     return { bestVal, playedVal };
 }
 
-function botMove() { if (!turn || turn !== botColor || !isBot || gameOver) return; botThinking = true; thinkingEl.classList.add('visible'); let effectiveLevel = botLevel; if (botLevel === 4) { let playerAcc = 50; if (moveHistory.length > 1) { let goodMoves = 0; let playerMoves = moveHistory.filter(m => m.color !== botColor); if (playerMoves.length > 0) { playerMoves.forEach(m => { const ev = findBestAndPlayedEval(m.color, m.boardBefore, m.savedEP, m.savedCR, m.fR, m.fC, m.tR, m.tC); const cl = classifyMove(ev.bestVal, ev.playedVal, m.color, m.isBook); if (['best', 'excellent', 'good', 'book', 'brilliant'].includes(cl.cls)) goodMoves++; }); playerAcc = (goodMoves / playerMoves.length) * 100; } } if (playerAcc < 40) effectiveLevel = 1; else if (playerAcc < 75) effectiveLevel = 2; else effectiveLevel = 3; } const thinkBase = effectiveLevel === 3 ? 1800 : effectiveLevel === 2 ? 1200 : 800; const thinkTime = thinkBase + ~~(Math.random() * 1200); setTimeout(() => { const moves = getAllMoves(botColor, board); if (!moves.length) return; let best = null; if (effectiveLevel === 1) { const caps = moves.filter(m => board[m.tR][m.tC]); best = (caps.length && Math.random() < .4) ? caps[~~(Math.random() * caps.length)] : moves[~~(Math.random() * moves.length)]; } else if (effectiveLevel === 2) { const isMax = botColor === 'w'; let scored = moves.map(m => ({ ...m, val: evaluateBoard(simMove(board, m.fR, m.fC, m.tR, m.tC, 'Q')) + (Math.random() - .5) * 250 })); scored.sort((a, b) => isMax ? b.val - a.val : a.val - b.val); best = scored[Math.random() < .25 ? Math.min(~~(Math.random() * 4), scored.length - 1) : 0]; } else { const isMax = botColor === 'w'; let bestVal = isMax ? -Infinity : Infinity; const ord = orderMoves(moves, board); const sEP = enPassantTarget, sCR = { ...castleRights }; for (const m of ord) { const mvr = board[m.fR][m.fC]; const nEP = (mvr.type[1] === 'P' && Math.abs(m.tR - m.fR) === 2) ? { r: (m.fR + m.tR) / 2, c: m.fC } : null; const nCR = { ...castleRights }; if (mvr.type[1] === 'K') { nCR[botColor + 'K'] = false; nCR[botColor + 'QR'] = false; nCR[botColor + 'KR'] = false; } if (mvr.type[1] === 'R') { if (m.fC === 0) nCR[botColor + 'QR'] = false; if (m.fC === 7) nCR[botColor + 'KR'] = false; } const nb = simMove(board, m.fR, m.fC, m.tR, m.tC, 'Q'); const val = minimax(nb, 2, -Infinity, Infinity, !isMax, nEP, nCR) + (Math.random() - .5) * 120; if (isMax ? val > bestVal : val < bestVal) { bestVal = val; best = m; } } enPassantTarget = sEP; Object.assign(castleRights, sCR); } botThinking = false; thinkingEl.classList.remove('visible'); if (best) { const mvr = board[best.fR][best.fC]; const pr = (mvr.type[1] === 'P' && (best.tR === 0 || best.tR === 7)) ? 'Q' : null; executeMove(best.fR, best.fC, best.tR, best.tC, pr, true); } }, thinkTime); }
+function botMove() { if (!turn || turn !== botColor || !isBot || gameOver) return; botThinking = true; thinkingEl.classList.add('visible'); let effectiveLevel = botLevel; if (botLevel === 4) { let playerAcc = 50; if (moveHistory.length > 1) { let goodMoves = 0; let playerMoves = moveHistory.filter(m => m.color !== botColor); if (playerMoves.length > 0) { playerMoves.forEach(m => { if (!m.boardBefore) return; const ev = findBestAndPlayedEval(m.color, m.boardBefore, m.savedEP, m.savedCR, m.fR, m.fC, m.tR, m.tC); const cl = classifyMove(ev.bestVal, ev.playedVal, m.color, m.isBook); if (['best', 'excellent', 'good', 'book', 'brilliant'].includes(cl.cls)) goodMoves++; }); playerAcc = (goodMoves / playerMoves.length) * 100; } } if (playerAcc < 40) effectiveLevel = 1; else if (playerAcc < 75) effectiveLevel = 2; else effectiveLevel = 3; } const thinkBase = effectiveLevel === 3 ? 1800 : effectiveLevel === 2 ? 1200 : 800; const thinkTime = thinkBase + ~~(Math.random() * 1200); setTimeout(() => { const moves = getAllMoves(botColor, board); if (!moves.length) return; let best = null; if (effectiveLevel === 1) { const caps = moves.filter(m => board[m.tR][m.tC]); best = (caps.length && Math.random() < .4) ? caps[~~(Math.random() * caps.length)] : moves[~~(Math.random() * moves.length)]; } else if (effectiveLevel === 2) { const isMax = botColor === 'w'; let scored = moves.map(m => ({ ...m, val: evaluateBoard(simMove(board, m.fR, m.fC, m.tR, m.tC, 'Q')) + (Math.random() - .5) * 250 })); scored.sort((a, b) => isMax ? b.val - a.val : a.val - b.val); best = scored[Math.random() < .25 ? Math.min(~~(Math.random() * 4), scored.length - 1) : 0]; } else { const isMax = botColor === 'w'; let bestVal = isMax ? -Infinity : Infinity; const ord = orderMoves(moves, board); const sEP = enPassantTarget, sCR = { ...castleRights }; for (const m of ord) { const mvr = board[m.fR][m.fC]; const nEP = (mvr.type[1] === 'P' && Math.abs(m.tR - m.fR) === 2) ? { r: (m.fR + m.tR) / 2, c: m.fC } : null; const nCR = { ...castleRights }; if (mvr.type[1] === 'K') { nCR[botColor + 'K'] = false; nCR[botColor + 'QR'] = false; nCR[botColor + 'KR'] = false; } if (mvr.type[1] === 'R') { if (m.fC === 0) nCR[botColor + 'QR'] = false; if (m.fC === 7) nCR[botColor + 'KR'] = false; } const nb = simMove(board, m.fR, m.fC, m.tR, m.tC, 'Q'); const val = minimax(nb, 2, -Infinity, Infinity, !isMax, nEP, nCR) + (Math.random() - .5) * 120; if (isMax ? val > bestVal : val < bestVal) { bestVal = val; best = m; } } enPassantTarget = sEP; Object.assign(castleRights, sCR); } botThinking = false; thinkingEl.classList.remove('visible'); if (best) { const mvr = board[best.fR][best.fC]; const pr = (mvr.type[1] === 'P' && (best.tR === 0 || best.tR === 7)) ? 'Q' : null; executeMove(best.fR, best.fC, best.tR, best.tC, pr, true); } }, thinkTime); }
 
 function openOnlineMenu() { document.getElementById('online-overlay').style.display = 'flex'; document.getElementById('ol-status').innerText = ''; document.getElementById('ol-status').className = 'online-status'; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; }
 function closeOnlineMenu() { document.getElementById('online-overlay').style.display = 'none'; if (peer && !conn && !isSpectating) { peer.destroy(); peer = null; } }
@@ -138,12 +192,13 @@ async function updateActiveMatch(peerId) {
 }
 
 function broadcastToSpectators(data) {
-    spectators.forEach(s => { if (s.open) { try { s.send(data); } catch(e) { console.error("Broadcast error:", e); } } });
+    spectators.forEach(s => { if (s.open) { try { s.send(data); } catch(e) {} } });
 }
 
 function updateSpectatorCount() {
     const el = document.getElementById('spectator-count');
     const val = document.getElementById('spectator-count-val');
+    if (!el || !val) return;
     if (spectators.length > 0) {
         el.style.display = 'flex';
         val.innerText = spectators.length;
@@ -155,14 +210,32 @@ function updateSpectatorCount() {
 function syncSpectator(c) {
     if (!c.open) return;
     const boardData = board.map(row => row.map(cell => cell ? cell.type : null));
-    // Strip non-serializable data (DOM elements) from moveHistory
     const safeHistory = moveHistory.map(m => ({
         fR: m.fR, fC: m.fC, tR: m.tR, tC: m.tC,
         notation: m.notation, color: m.color, moveNum: m.moveNum,
         evalAfter: m.evalAfter, isBook: m.isBook,
         savedEP: m.savedEP, savedCR: m.savedCR
-        // boardBefore intentionally omitted — contains DOM refs
     }));
+
+    // Determine player names for spectator display
+    let wName, bName, wElo, bElo;
+    if (isOnline) {
+        wName = flipped ? oppName : myName;
+        bName = flipped ? myName : oppName;
+        wElo = flipped ? oppElo : myElo;
+        bElo = flipped ? myElo : oppElo;
+    } else if (isBot) {
+        wName = myColor === 'w' ? (myName || 'You') : oppName;
+        bName = myColor === 'b' ? (myName || 'You') : oppName;
+        wElo = myColor === 'w' ? myElo : 0;
+        bElo = myColor === 'b' ? myElo : 0;
+    } else {
+        wName = 'White';
+        bName = 'Black';
+        wElo = 0;
+        bElo = 0;
+    }
+
     c.send({
         type: 'sync-spectator',
         board: boardData,
@@ -170,13 +243,11 @@ function syncSpectator(c) {
         moveHistory: safeHistory,
         castleRights: { ...castleRights },
         enPassantTarget: enPassantTarget ? { ...enPassantTarget } : null,
-        wName: flipped ? oppName : myName,
-        bName: flipped ? myName : oppName,
-        wElo: flipped ? oppElo : myElo,
-        bElo: flipped ? myElo : oppElo,
+        wName, bName, wElo, bElo,
         scoreMe, scoreOpp,
         gameStarted, gameOver,
-        moveCount
+        moveCount,
+        gameMode: isBot ? 'bot' : (isOnline ? 'online' : 'local')
     });
 }
 
@@ -190,6 +261,7 @@ function spectateMatch(peerId) {
     if (upm) upm.style.display = 'none';
 
     cleanupPeer();
+    stopLocalHostPeer();
     isSpectating = true;
     peer = new Peer(undefined, peerOpts);
 
@@ -200,7 +272,7 @@ function spectateMatch(peerId) {
         conn = peer.connect(peerId, { reliable: true });
         conn.on('open', () => {
             document.getElementById('online-overlay').style.display = 'none';
-            conn.send({ type: 'spectate', name: typeof myName !== 'undefined' ? myName : 'Spectator' });
+            conn.send({ type: 'spectate', name: typeof currentProfile !== 'undefined' && currentProfile ? currentProfile.username : 'Spectator' });
         });
         conn.on('data', handleNet);
         conn.on('close', () => { addSys('Host disconnected.'); });
@@ -210,14 +282,15 @@ function spectateMatch(peerId) {
 function cleanupPeer() {
     updateActiveMatch(null);
     if (peer) { try { peer.destroy(); } catch (e) { } peer = null; }
-    conn = null; connectionReady = false; spectators = []; updateSpectatorCount();
+    conn = null; connectionReady = false;
+    spectators = []; updateSpectatorCount();
 }
 
 const peerOpts = { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] } };
 
 function createRoom() {
     const n = document.getElementById('ol-name').value.trim() || 'Player 1';
-    myName = n; cleanupPeer();
+    myName = n; cleanupPeer(); stopLocalHostPeer();
     document.getElementById('btn-create').disabled = true;
     document.getElementById('btn-join').disabled = true;
     setOlStatus('Creating...', '');
@@ -226,8 +299,6 @@ function createRoom() {
     peer.on('open', () => {
         setOlStatus('Share code: <strong style="font-size:1.3rem;letter-spacing:2px;color:var(--accent)">' + rc + '</strong> <button class="copy-btn" onclick="copyCode(\'' + rc + '\')">Copy</button><br><span style="font-size:.65rem;color:var(--text-muted)">Waiting<span class="searching-dots"></span></span>', 'success');
     });
-
-    // Unified Connection Handler
     peer.on('connection', c => {
         c.once('data', d => {
             if (d.type === 'spectate') {
@@ -239,7 +310,6 @@ function createRoom() {
             }
         });
     });
-
     peer.on('error', e => {
         if (e.type === 'unavailable-id') { cleanupPeer(); setTimeout(createRoom, 500); }
         else { setOlStatus('Error: ' + e.type, 'error'); document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; }
@@ -250,7 +320,7 @@ function joinRoom() {
     const n = document.getElementById('ol-name').value.trim() || 'Player 2';
     const ri = document.getElementById('ol-room').value.trim().toUpperCase();
     if (!ri) { setOlStatus('Enter code', 'error'); return; }
-    myName = n; cleanupPeer();
+    myName = n; cleanupPeer(); stopLocalHostPeer();
     document.getElementById('btn-create').disabled = true;
     document.getElementById('btn-join').disabled = true;
     setOlStatus('Connecting...', '');
@@ -267,8 +337,6 @@ function joinRoom() {
         conn.on('open', () => { clearTimeout(to); myColor = 'b'; flipped = true; initConn(); });
         conn.on('error', () => { clearTimeout(to); setOlStatus('Connection failed.', 'error'); if (peer) { try { peer.destroy(); } catch (e) { } peer = null; } conn = null; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; });
     });
-
-    // Accept spectators if joining as Black
     peer.on('connection', c => {
         c.once('data', d => {
             if (d.type === 'spectate') {
@@ -277,7 +345,6 @@ function joinRoom() {
             }
         });
     });
-
     peer.on('error', e => {
         if (e.type === 'peer-unavailable') setOlStatus('Room not found.', 'error');
         else setOlStatus('Error: ' + e.type, 'error');
@@ -325,25 +392,30 @@ function handleNet(d) {
         document.getElementById('mob-btn-draw').style.display = 'none';
         document.getElementById('chat-toggle').style.display = 'block';
 
-        // FIX #3: Set gameStarted and gameOver
         gameStarted = d.gameStarted;
         gameOver = d.gameOver;
         turn = d.turn; timeW = d.timeW; timeB = d.timeB;
         moveCount = d.moveCount || 0;
         moveHistory = d.moveHistory || [];
         scoreMe = d.scoreMe; scoreOpp = d.scoreOpp;
-        oppName = d.wName + ' vs ' + d.bName;
         flipped = false;
 
-        // FIX #4: Sync castleRights and enPassantTarget
         if (d.castleRights) castleRights = d.castleRights;
         if (d.enPassantTarget !== undefined) enPassantTarget = d.enPassantTarget;
 
-        // FIX #1: Build grid only, then place pieces from synced data
+        // Set display name based on game mode
+        const mode = d.gameMode || 'online';
+        if (mode === 'bot') {
+            oppName = d.wName + ' vs ' + d.bName;
+        } else if (mode === 'local') {
+            oppName = 'White vs Black';
+        } else {
+            oppName = d.wName + ' vs ' + d.bName;
+        }
+
         gridEl.innerHTML = ''; piecesLayer.innerHTML = '';
         board = Array(8).fill(null).map(() => Array(8).fill(null));
-
-        buildGrid(); // Only builds squares, not pieces
+        buildGrid();
 
         for (let r = 0; r < 8; r++) {
             for (let c = 0; c < 8; c++) {
@@ -359,7 +431,6 @@ function handleNet(d) {
             }
         }
 
-        // Rebuild move history display
         historyList.innerHTML = '';
         if (moveHistory.length) {
             moveHistory.forEach(m => addHist(m.moveNum, m.notation, m.color));
@@ -391,7 +462,6 @@ function handleNet(d) {
     if (d.type === 'elo-update') { oppElo = d.elo; updateLabels(); }
     if (d.type === 'move') {
         executeMove(d.fR, d.fC, d.tR, d.tC, d.promo, true);
-        // FIX #6: Sync timer from host on each move
         if (d.timeW !== undefined) { timeW = d.timeW; timeB = d.timeB; updateTimer(); }
     }
     if (d.type === 'chat') {
@@ -425,7 +495,7 @@ function sendChat() {
     const i = document.getElementById('chat-input'); const m = i.value.trim(); if (!m) return;
     i.value = ''; addChatMsg(myName, m, 'you');
     if (conn?.open) conn.send({ type: 'chat', msg: m, name: myName });
-    if (isOnline) broadcastToSpectators({ type: 'chat', msg: m, name: myName });
+    broadcastToSpectators({ type: 'chat', msg: m, name: myName });
 }
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && document.activeElement === document.getElementById('chat-input')) sendChat(); });
 function addChatMsg(n, m, c) { const el = document.createElement('div'); el.className = 'chat-msg ' + c; el.innerHTML = '<span class="chat-name">' + esc(n) + ':</span> ' + esc(m); document.getElementById('chat-messages').appendChild(el); document.getElementById('chat-messages').scrollTop = 99999; }
@@ -444,8 +514,7 @@ function updateLabels() {
     const tName = isBot ? 'Bot' : (oppName + (isOnline && !isBot && !isSpectating ? ' (' + tEloStr + ')' : ''));
     if (isOnline || isBot) { bl.innerText = bName; tl.innerText = tName; mbl.innerText = bName; mtl.innerText = tName; } else { bl.innerText = flipped ? 'Black' : 'White'; tl.innerText = flipped ? 'White' : 'Black'; mbl.innerText = flipped ? 'Black' : 'White'; mtl.innerText = flipped ? 'White' : 'Black'; }
     if (isOnline && !isSpectating) {
-        const topUid = oppUid;
-        const botUid = myUid;
+        const topUid = oppUid; const botUid = myUid;
         [tl, mtl].forEach(el => { el.style.cursor = topUid ? 'pointer' : ''; el.onclick = topUid ? () => { if (typeof showUserProfile === 'function') showUserProfile(topUid); } : null; });
         [bl, mbl].forEach(el => { el.style.cursor = botUid ? 'pointer' : ''; el.onclick = botUid ? () => { if (typeof showUserProfile === 'function') showUserProfile(botUid); } : null; });
     } else {
@@ -468,6 +537,8 @@ function startRematch() {
     }
     resetGame();
     if (isBot && botColor === 'w') setTimeout(botMove, 500);
+    // Restart local host peer for bot/local games
+    if (!isOnline && !isSpectating) startLocalHostPeer();
 }
 function handleForfeitRequest() { if (!turn || gameOver || isSpectating) return; if ((isOnline || isBot) && turn !== myColor) return; isPaused = true; document.getElementById('modal-text').innerText = 'Resign?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); if (isOnline) { conn.send({ type: 'resign' }); scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); } else if (isBot) { scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); } else endGame((turn === 'w' ? 'White' : 'Black') + ' resigned', (turn === 'w' ? 'Black' : 'White') + ' wins!', ''); }; modalOverlay.style.display = 'flex'; }
 function handleDrawRequest() { if (!turn || gameOver || isSpectating) return; if (isBot) { endGame('Draw', '½ — ½', 'draw'); return; } if (isOnline) { if (turn !== myColor) return; conn.send({ type: 'draw-offer' }); addSys('You offered a draw'); return; } isPaused = true; document.getElementById('modal-text').innerText = 'Agree to a draw?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); endGame('Draw', '½ — ½', 'draw'); }; modalOverlay.style.display = 'flex'; }
@@ -481,8 +552,7 @@ function endGame(sub, res, outcome) {
     document.querySelectorAll('.mobile-timer').forEach(t => t.classList.remove('active'));
 
     if (!isSpectating) {
-        btnNew.classList.add('visible');
-        mobBtnNew.style.display = 'block';
+        btnNew.classList.add('visible'); mobBtnNew.style.display = 'block';
         document.getElementById('btn-review').classList.add('visible');
         document.getElementById('mob-btn-review').style.display = 'block';
         document.getElementById('btn-draw').style.display = 'none';
@@ -521,8 +591,7 @@ function endGame(sub, res, outcome) {
             const eloInfo = recordGameResult(outcome, oppElo, myAcc);
             if (eloInfo) {
                 eloStr = ' (' + (eloInfo.eloChange >= 0 ? '+' : '') + eloInfo.eloChange + ')';
-                myElo = eloInfo.newElo;
-                updateLabels();
+                myElo = eloInfo.newElo; updateLabels();
                 if (isOnline && conn?.open) conn.send({ type: 'elo-update', elo: myElo });
             }
         }
@@ -532,9 +601,13 @@ function endGame(sub, res, outcome) {
     document.getElementById('banner-sub').innerText = sub + eloStr;
     banner.classList.add('visible');
 
-    if (isOnline) {
-        broadcastToSpectators({ type: 'game-over', sub, res, outcome });
-        if (!isSpectating) updateActiveMatch(null);
+    // Broadcast game over to spectators (works for online, bot, and local)
+    broadcastToSpectators({ type: 'game-over', sub, res, outcome });
+
+    if (isOnline && !isSpectating) updateActiveMatch(null);
+    // Clean up local host peer on game end
+    if (!isOnline && !isSpectating) {
+        stopLocalHostPeer();
     }
 }
 
@@ -569,8 +642,8 @@ function executeMove(fR, fC, tR, tC, promo, isRemote) {
     lastMoveSquares.forEach(k => { const el = document.getElementById('sq-' + k); if (el) el.classList.add('last-move'); });
 
     if (isOnline && !isRemote && !isSpectating) sendMv(fR, fC, tR, tC, promo);
-    // FIX #6: Include timer values in broadcast so spectators stay in sync
-    if (isOnline && !isSpectating) broadcastToSpectators({ type: 'move', fR, fC, tR, tC, promo, isRemote: true, timeW, timeB });
+    // Broadcast to spectators — works for online, bot, and local games
+    if (!isSpectating) broadcastToSpectators({ type: 'move', fR, fC, tR, tC, promo, isRemote: true, timeW, timeB });
 
     const evalAfter = evaluateBoard(board);
 
@@ -585,12 +658,8 @@ function executeMove(fR, fC, tR, tC, promo, isRemote) {
     if (moveHistory.length) moveHistory[moveHistory.length - 1].notation = notation;
     moveCount++; addHist(moveCount, notation, col); clearCheck(); updateTimer();
     if (!hasMv) { if (inChk) { const wc = turn === 'w' ? 'b' : 'w'; if (isOnline || isBot) { if (wc === myColor) { scoreMe++; endGame('Checkmate', 'You win!', 'win'); } else { scoreOpp++; endGame('Checkmate', oppName + ' wins!', 'loss'); } } else endGame('Checkmate', (turn === 'w' ? 'Black' : 'White') + ' wins!', ''); } else { if (isOnline || isBot) { scoreMe += .5; scoreOpp += .5; } endGame('Stalemate', '½ — ½', 'draw'); } return; }
-    // Check for insufficient material
     let wPcs = [], bPcs = [];
-    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
-        const p = board[r][c];
-        if (p) { if (p.type[0] === 'w') wPcs.push(p.type[1]); else bPcs.push(p.type[1]); }
-    }
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const p = board[r][c]; if (p) { if (p.type[0] === 'w') wPcs.push(p.type[1]); else bPcs.push(p.type[1]); } }
     let insuf = false;
     if (wPcs.length === 1 && bPcs.length === 1) insuf = true;
     if (wPcs.length === 1 && bPcs.length === 2 && (bPcs.includes('B') || bPcs.includes('N'))) insuf = true;
@@ -610,16 +679,9 @@ function handleClick(vr, vc) {
     const r = actualR(vr), c = actualC(vc);
     if (!cheatGodMode && ((isOnline || isBot) && turn !== myColor)) return;
     clearAnnot();
-
-    if (cheatGodMode && selected) {
-        if (selected.r === r && selected.c === c) { clearUI(); return; }
-        movePiece(selected.r, selected.c, r, c);
-        return;
-    }
-
+    if (cheatGodMode && selected) { if (selected.r === r && selected.c === c) { clearUI(); return; } movePiece(selected.r, selected.c, r, c); return; }
     const mv = legalMoves.find(m => m.r === r && m.c === c);
     if (mv) { movePiece(selected.r, selected.c, r, c); return; }
-
     const p = board[r][c]; clearUI();
     const can = cheatGodMode ? (p !== null) : ((isOnline || isBot) ? (p && p.type[0] === myColor && turn === myColor) : (p && p.type[0] === turn));
     if (can) {
@@ -658,18 +720,10 @@ function endDrag(e) {
     const rect = gameView.getBoundingClientRect(); let cx, cy;
     if (e.changedTouches) { cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY; } else { cx = e.clientX; cy = e.clientY; }
     const vc = ~~((cx - rect.left) / (rect.width / 8)), vr = ~~((cy - rect.top) / (rect.height / 8));
-    dragging.piece.el.classList.remove('dragging');
-    dragging.piece.el.style.transition = '';
+    dragging.piece.el.classList.remove('dragging'); dragging.piece.el.style.transition = '';
     if (dragging.moved && vr >= 0 && vr <= 7 && vc >= 0 && vc <= 7) {
         const tR = actualR(vr), tC = actualC(vc);
-        if (cheatGodMode) {
-            if (tR === selected.r && tC === selected.c) {
-                dragging.piece.el.style.left = (viewC(dragging.fC) * 12.5) + '%';
-                dragging.piece.el.style.top = (viewR(dragging.fR) * 12.5) + '%';
-                clearUI(); dragging = null; return;
-            }
-            dragging = null; movePiece(selected.r, selected.c, tR, tC); return;
-        }
+        if (cheatGodMode) { if (tR === selected.r && tC === selected.c) { dragging.piece.el.style.left = (viewC(dragging.fC) * 12.5) + '%'; dragging.piece.el.style.top = (viewR(dragging.fR) * 12.5) + '%'; clearUI(); dragging = null; return; } dragging = null; movePiece(selected.r, selected.c, tR, tC); return; }
         const mv = legalMoves.find(m => m.r === tR && m.c === tC);
         if (mv) { dragging = null; movePiece(selected.r, selected.c, tR, tC); return; }
     }
@@ -678,7 +732,7 @@ function endDrag(e) {
 gameView.addEventListener('mousedown', startDrag); gameView.addEventListener('touchstart', startDrag, { passive: false }); document.addEventListener('mousemove', onDragMove); document.addEventListener('touchmove', onDragMove, { passive: false }); document.addEventListener('mouseup', endDrag); document.addEventListener('touchend', endDrag);
 gridEl.addEventListener('click', e => { if (dragging) return; const sq = e.target.closest('.square'); if (!sq) return; const p = sq.id.replace('sq-', '').split('-'); handleClick(+p[0], +p[1]); });
 
-function getBaseMoves(r, c, b) { const p = b[r][c].type, col = p[0], tp = p[1], en = col === 'w' ? 'b' : 'w', m = []; const add = (dr, dc, sl) => { for (let i = 1; i <= (sl ? 7 : 1); i++) { let nr = r + dr * i, nc = c + dc * i; if (nr < 0 || nr > 7 || nc < 0 || nc > 7) break; if (!b[nr][nc]) m.push({ r: nr, c: nc }); else { if (b[nr][nc].type[0] === en) m.push({ r: nr, c: nc }); break; } } }; if ('RQ'.includes(tp)) [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(d => add(d[0], d[1], true)); if ('BQ'.includes(tp)) [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(d => add(d[0], d[1], true)); if (tp === 'N') [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]].forEach(d => add(d[0], d[1], false)); if (tp === 'K') [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(d => add(d[0], d[1], false)); if (tp === 'P') { let dir = col === 'w' ? -1 : 1; if (r + dir >= 0 && r + dir <= 7 && !b[r + dir][c]) { m.push({ r: r + dir, c: c }); if ((col === 'w' && r === 6 || col === 'b' && r === 1) && !b[r + dir * 2][c]) m.push({ r: r + dir * 2, c: c }); } [1, -1].forEach(dc => { const nr = r + dir, nc = c + dc; if (nr >= 0 && nr <= 7 && nc >= 0 && nc <= 7) { if (b[nr][nc]?.type[0] === en) m.push({ r: nr, c: nc }); if (enPassantTarget && nr === enPassantTarget.r && nc === enPassantTarget.c) m.push({ r: nr, c: nc }); } }); } return m; }
+function getBaseMoves(r, c, b) { const p = b[r][c].type, col = p[0], tp = p[1], en = col === 'w' ? 'b' : 'w', m = []; const add = (dr, dc, sl) => { for (let i = 1; i <= (sl ? 7 : 1); i++) { let nr = r + dr * i, nc = c + dc * i; if (nr < 0 || nr > 7 || nc < 0 || nc > 7) break; if (!b[nr][nc]) m.push({ r: nr, c: nc }); else { if (b[nr][nc].type[0] === en) m.push({ r: nr, c: nc }); break; } } }; if ('RQ'.includes(tp)) [[0,1],[0,-1],[1,0],[-1,0]].forEach(d => add(d[0], d[1], true)); if ('BQ'.includes(tp)) [[1,1],[1,-1],[-1,1],[-1,-1]].forEach(d => add(d[0], d[1], true)); if (tp === 'N') [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]].forEach(d => add(d[0], d[1], false)); if (tp === 'K') [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(d => add(d[0], d[1], false)); if (tp === 'P') { let dir = col === 'w' ? -1 : 1; if (r + dir >= 0 && r + dir <= 7 && !b[r + dir][c]) { m.push({ r: r + dir, c: c }); if ((col === 'w' && r === 6 || col === 'b' && r === 1) && !b[r + dir * 2][c]) m.push({ r: r + dir * 2, c: c }); } [1, -1].forEach(dc => { const nr = r + dir, nc = c + dc; if (nr >= 0 && nr <= 7 && nc >= 0 && nc <= 7) { if (b[nr][nc]?.type[0] === en) m.push({ r: nr, c: nc }); if (enPassantTarget && nr === enPassantTarget.r && nc === enPassantTarget.c) m.push({ r: nr, c: nc }); } }); } return m; }
 function getFullMoves(r, c, b) { const mv = getBaseMoves(r, c, b); const p = b[r][c], col = p.type[0]; if (p.type[1] === 'K' && castleRights[col + 'K']) { const row = col === 'w' ? 7 : 0; if (r === row && c === 4) { if (castleRights[col + 'KR'] && b[row][7]?.type === col + 'R' && !b[row][5] && !b[row][6] && !isInCheck(col, b) && !isSqAtt(row, 5, col, b) && !isSqAtt(row, 6, col, b)) mv.push({ r: row, c: 6 }); if (castleRights[col + 'QR'] && b[row][0]?.type === col + 'R' && !b[row][1] && !b[row][2] && !b[row][3] && !isInCheck(col, b) && !isSqAtt(row, 3, col, b) && !isSqAtt(row, 2, col, b)) mv.push({ r: row, c: 2 }); } } return mv; }
 function isSqAtt(r, c, by, b) { const en = by === 'w' ? 'b' : 'w'; for (let rr = 0; rr < 8; rr++)for (let cc = 0; cc < 8; cc++)if (b[rr][cc]?.type[0] === en && getBaseMoves(rr, cc, b).some(m => m.r === r && m.c === c)) return true; return false; }
 function getSafeMoves(r, c, b) { const pc = b[r][c], col = pc.type[0]; const bm = pc.type[1] === 'K' ? getFullMoves(r, c, b) : getBaseMoves(r, c, b); return bm.filter(m => { const d = b.map(row => row.map(cell => cell ? { type: cell.type, el: cell.el } : null)); if (pc.type[1] === 'P' && m.c !== c && !d[m.r][m.c]) d[r][m.c] = null; d[m.r][m.c] = d[r][c]; d[r][c] = null; let kp = null; for (let rr = 0; rr < 8; rr++)for (let cc = 0; cc < 8; cc++)if (d[rr][cc]?.type === col + 'K') kp = { r: rr, c: cc }; if (!kp) return false; const en = col === 'w' ? 'b' : 'w'; for (let rr = 0; rr < 8; rr++)for (let cc = 0; cc < 8; cc++)if (d[rr][cc]?.type[0] === en && getBaseMoves(rr, cc, d).some(mm => mm.r === kp.r && mm.c === kp.c)) return false; return true; }); }
@@ -692,10 +746,8 @@ gameView.addEventListener('mouseup', e => { if (e.button === 2 && arrowStart) { 
 
 function classifyMove(bestEval, playedEval, color, isBookMove) {
     const sign = color === 'w' ? 1 : -1;
-    const bestCP = bestEval * sign;
-    const playedCP = playedEval * sign;
+    const bestCP = bestEval * sign, playedCP = playedEval * sign;
     const cpLoss = bestCP - playedCP;
-
     if (isBookMove && cpLoss <= 45) return { cls: 'book', label: 'Book' };
     if (cpLoss <= 5) return { cls: 'best', label: 'Best' };
     if (cpLoss <= 25) return { cls: 'excellent', label: 'Excellent' };
@@ -711,88 +763,28 @@ function showReview() {
     const panel = document.getElementById('review-panel-content');
     panel.innerHTML = '<div class="review-analyzing">📊 Analyzing ' + moveHistory.length + ' moves<span class="searching-dots"></span></div><button class="review-close" onclick="closeReview()">Cancel</button>';
     document.getElementById('review-overlay').classList.add('open');
-
     setTimeout(async () => {
         const classified = [];
         for (let i = 0; i < moveHistory.length; i++) {
             const m = moveHistory[i];
-            // Skip review analysis if boardBefore is missing (spectator history)
-            if (!m.boardBefore) {
-                classified.push({ ...m, cls: 'good', label: 'N/A' });
-                continue;
-            }
+            if (!m.boardBefore) { classified.push({ ...m, cls: 'good', label: 'N/A' }); continue; }
             const evals = findBestAndPlayedEval(m.color, m.boardBefore, m.savedEP, m.savedCR, m.fR, m.fC, m.tR, m.tC);
             const cls = classifyMove(evals.bestVal, evals.playedVal, m.color, m.isBook);
             classified.push({ ...m, ...cls });
-
-            if (i % 2 === 0) {
-                const analyzingEl = document.querySelector('.review-analyzing');
-                if (analyzingEl) analyzingEl.innerHTML = '📊 Analyzing move ' + (i + 1) + '/' + moveHistory.length + '<span class="searching-dots"></span>';
-                await new Promise(r => setTimeout(r, 0));
-            }
+            if (i % 2 === 0) { const ae = document.querySelector('.review-analyzing'); if (ae) ae.innerHTML = '📊 Analyzing move ' + (i + 1) + '/' + moveHistory.length + '<span class="searching-dots"></span>'; await new Promise(r => setTimeout(r, 0)); }
         }
-
-        const wMoves = classified.filter(m => m.color === 'w');
-        const bMoves = classified.filter(m => m.color === 'b');
-
-        function getStats(moves) {
-            const counts = { brilliant: 0, best: 0, excellent: 0, good: 0, book: 0, inaccuracy: 0, mistake: 0, miss: 0, blunder: 0 };
-            moves.forEach(m => counts[m.cls]++);
-            let score = 0;
-            score += (counts.best + counts.book + counts.brilliant) * 1.0;
-            score += counts.excellent * 0.95;
-            score += counts.good * 0.85;
-            score += counts.inaccuracy * 0.50;
-            score += counts.mistake * 0.20;
-            const total = moves.length || 1;
-            let accuracy = Math.round((score / total) * 100);
-            if (accuracy > 100) accuracy = 100;
-            if (accuracy < 0) accuracy = 0;
-            return { counts, accuracy };
-        }
-
-        const wStats = getStats(wMoves);
-        const bStats = getStats(bMoves);
+        const wMoves = classified.filter(m => m.color === 'w'), bMoves = classified.filter(m => m.color === 'b');
+        function getStats(moves) { const counts = { brilliant: 0, best: 0, excellent: 0, good: 0, book: 0, inaccuracy: 0, mistake: 0, miss: 0, blunder: 0 }; moves.forEach(m => counts[m.cls]++); let score = 0; score += (counts.best + counts.book + counts.brilliant) * 1.0; score += counts.excellent * 0.95; score += counts.good * 0.85; score += counts.inaccuracy * 0.50; score += counts.mistake * 0.20; const total = moves.length || 1; let accuracy = Math.round((score / total) * 100); return { counts, accuracy: Math.max(0, Math.min(100, accuracy)) }; }
+        const wStats = getStats(wMoves), bStats = getStats(bMoves);
         const wName = (isOnline || isBot) ? (myColor === 'w' ? (isBot ? 'You' : myName) : oppName) : 'White';
         const bName = (isOnline || isBot) ? (myColor === 'b' ? (isBot ? 'You' : myName) : oppName) : 'Black';
-
-        function renderMoveList(moves) {
-            return moves.map(m =>
-                '<div class="review-move-item">' +
-                '<span class="rm-num">' + Math.ceil(m.moveNum / 2) + '.</span>' +
-                '<span class="rm-notation">' + m.notation + '</span>' +
-                '<span class="rm-badge ' + m.cls + '">' + m.label + '</span></div>'
-            ).join('');
-        }
-
-        function renderCounts(c) {
-            const order = [['best', 'Best', '#81b64c'], ['excellent', 'Excellent', '#90c050'], ['good', 'Good', '#a8b89c'], ['book', 'Book', '#b8a878'], ['inaccuracy', 'Inaccuracy', '#e6b432'], ['mistake', 'Mistake', '#e08c32'], ['miss', 'Miss', '#d26432'], ['blunder', 'Blunder', '#c83232']];
-            return order.filter(([k]) => c[k] > 0).map(([k, label, color]) =>
-                '<span style="display:inline-flex;align-items:center;gap:3px;margin:2px 4px;font-size:.65rem">' +
-                '<span class="rm-badge ' + k + '">' + c[k] + '</span>' +
-                '<span style="color:' + color + ';font-weight:600">' + label + '</span></span>'
-            ).join('');
-        }
-
-        panel.innerHTML =
-            '<h2>📊 Game Review</h2>' +
-            '<div class="review-sub">' + moveHistory.length + ' moves analyzed</div>' +
-            '<div class="review-stats">' +
-            '<div class="review-stat-card"><div class="rs-val" style="color:#81b64c">' + wStats.accuracy + '%</div><div class="rs-label">' + wName + '</div></div>' +
-            '<div class="review-stat-card"><div class="rs-val" style="color:#c0935a">' + bStats.accuracy + '%</div><div class="rs-label">' + bName + '</div></div></div>' +
-            '<div class="review-player"><div class="review-player-header"><span class="review-player-name">♔ ' + wName + '</span><span class="review-player-accuracy">' + wStats.accuracy + '%</span></div>' +
-            '<div style="margin-bottom:6px;line-height:1.8">' + renderCounts(wStats.counts) + '</div>' +
-            '<div class="review-move-list">' + renderMoveList(wMoves) + '</div></div>' +
-            '<div class="review-player"><div class="review-player-header"><span class="review-player-name">♚ ' + bName + '</span><span class="review-player-accuracy">' + bStats.accuracy + '%</span></div>' +
-            '<div style="margin-bottom:6px;line-height:1.8">' + renderCounts(bStats.counts) + '</div>' +
-            '<div class="review-move-list">' + renderMoveList(bMoves) + '</div></div>' +
-            '<button class="review-close" onclick="closeReview()">Close</button>';
+        function renderMoveList(moves) { return moves.map(m => '<div class="review-move-item"><span class="rm-num">' + Math.ceil(m.moveNum / 2) + '.</span><span class="rm-notation">' + m.notation + '</span><span class="rm-badge ' + m.cls + '">' + m.label + '</span></div>').join(''); }
+        function renderCounts(c) { const order = [['best','Best','#81b64c'],['excellent','Excellent','#90c050'],['good','Good','#a8b89c'],['book','Book','#b8a878'],['inaccuracy','Inaccuracy','#e6b432'],['mistake','Mistake','#e08c32'],['miss','Miss','#d26432'],['blunder','Blunder','#c83232']]; return order.filter(([k]) => c[k] > 0).map(([k, label, color]) => '<span style="display:inline-flex;align-items:center;gap:3px;margin:2px 4px;font-size:.65rem"><span class="rm-badge ' + k + '">' + c[k] + '</span><span style="color:' + color + ';font-weight:600">' + label + '</span></span>').join(''); }
+        panel.innerHTML = '<h2>📊 Game Review</h2><div class="review-sub">' + moveHistory.length + ' moves analyzed</div><div class="review-stats"><div class="review-stat-card"><div class="rs-val" style="color:#81b64c">' + wStats.accuracy + '%</div><div class="rs-label">' + wName + '</div></div><div class="review-stat-card"><div class="rs-val" style="color:#c0935a">' + bStats.accuracy + '%</div><div class="rs-label">' + bName + '</div></div></div><div class="review-player"><div class="review-player-header"><span class="review-player-name">♔ ' + wName + '</span><span class="review-player-accuracy">' + wStats.accuracy + '%</span></div><div style="margin-bottom:6px;line-height:1.8">' + renderCounts(wStats.counts) + '</div><div class="review-move-list">' + renderMoveList(wMoves) + '</div></div><div class="review-player"><div class="review-player-header"><span class="review-player-name">♚ ' + bName + '</span><span class="review-player-accuracy">' + bStats.accuracy + '%</span></div><div style="margin-bottom:6px;line-height:1.8">' + renderCounts(bStats.counts) + '</div><div class="review-move-list">' + renderMoveList(bMoves) + '</div></div><button class="review-close" onclick="closeReview()">Close</button>';
     }, 50);
 }
-
 function closeReview() { document.getElementById('review-overlay').classList.remove('open'); }
 
-// FIX #1: Separate grid-building from piece-placing
 function buildGrid() {
     gridEl.innerHTML = '';
     const fl = 'abcdefgh';
@@ -816,10 +808,8 @@ function resetGame() {
     statusEl.classList.remove('in-check'); mobStatus.classList.remove('in-check'); arrowLayer.innerHTML = '';
     thinkingEl.classList.remove('visible'); banner.classList.remove('visible');
 
-    // FIX #5: Only reset spectating state if NOT currently spectating
     if (!isSpectating) {
         document.getElementById('spectator-banner').style.display = 'none';
-        spectators = []; updateSpectatorCount();
     }
 
     btnNew.classList.remove('visible'); document.getElementById('btn-review').classList.remove('visible');
@@ -834,16 +824,13 @@ function resetGame() {
 }
 
 function buildBoard() {
-    const sm = [['bR', 'bN', 'bB', 'bQ', 'bK', 'bB', 'bN', 'bR'], ['bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP'], [], [], [], [], ['wP', 'wP', 'wP', 'wP', 'wP', 'wP', 'wP', 'wP'], ['wR', 'wN', 'wB', 'wQ', 'wK', 'wB', 'wN', 'wR']];
-    buildGrid(); // Build squares only
+    const sm = [['bR','bN','bB','bQ','bK','bB','bN','bR'],['bP','bP','bP','bP','bP','bP','bP','bP'],[],[],[],[],['wP','wP','wP','wP','wP','wP','wP','wP'],['wR','wN','wB','wQ','wK','wB','wN','wR']];
+    buildGrid();
     for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (sm[r]?.[c]) {
-        const el = document.createElement('div');
-        el.className = 'piece';
+        const el = document.createElement('div'); el.className = 'piece';
         el.style.backgroundImage = 'url(' + pieceImgs[sm[r][c]] + ')';
-        el.style.left = (viewC(c) * 12.5) + '%';
-        el.style.top = (viewR(r) * 12.5) + '%';
-        piecesLayer.appendChild(el);
-        board[r][c] = { type: sm[r][c], el };
+        el.style.left = (viewC(c) * 12.5) + '%'; el.style.top = (viewR(r) * 12.5) + '%';
+        piecesLayer.appendChild(el); board[r][c] = { type: sm[r][c], el };
     }
 }
 
@@ -852,155 +839,27 @@ updateLabels(); buildBoard(); updateTimer();
 // 🤫
 let cheatActive = false;
 function findBest(col) {
-    const moves = getAllMoves(col, board);
-    if (!moves.length) return null;
-    const isMax = col === 'w';
-    let bestVal = isMax ? -Infinity : Infinity, bestMove = null;
+    const moves = getAllMoves(col, board); if (!moves.length) return null;
+    const isMax = col === 'w'; let bestVal = isMax ? -Infinity : Infinity, bestMove = null;
     const sEP = enPassantTarget, sCR = { ...castleRights };
-    for (const m of orderMoves(moves, board)) {
-        const mvr = board[m.fR][m.fC];
-        const nEP = (mvr.type[1] === 'P' && Math.abs(m.tR - m.fR) === 2) ? { r: (m.fR + m.tR) / 2, c: m.fC } : null;
-        const nCR = { ...castleRights };
-        if (mvr.type[1] === 'K') { nCR[col + 'K'] = false; nCR[col + 'QR'] = false; nCR[col + 'KR'] = false; }
-        if (mvr.type[1] === 'R') { if (m.fC === 0) nCR[col + 'QR'] = false; if (m.fC === 7) nCR[col + 'KR'] = false; }
-        const nb = simMove(board, m.fR, m.fC, m.tR, m.tC, 'Q');
-        const val = minimax(nb, 2, -Infinity, Infinity, !isMax, nEP, nCR);
-        if (isMax ? val > bestVal : val < bestVal) { bestVal = val; bestMove = m; }
-    }
-    enPassantTarget = sEP; Object.assign(castleRights, sCR);
-    return bestMove;
+    for (const m of orderMoves(moves, board)) { const mvr = board[m.fR][m.fC]; const nEP = (mvr.type[1] === 'P' && Math.abs(m.tR - m.fR) === 2) ? { r: (m.fR + m.tR) / 2, c: m.fC } : null; const nCR = { ...castleRights }; if (mvr.type[1] === 'K') { nCR[col + 'K'] = false; nCR[col + 'QR'] = false; nCR[col + 'KR'] = false; } if (mvr.type[1] === 'R') { if (m.fC === 0) nCR[col + 'QR'] = false; if (m.fC === 7) nCR[col + 'KR'] = false; } const nb = simMove(board, m.fR, m.fC, m.tR, m.tC, 'Q'); const val = minimax(nb, 2, -Infinity, Infinity, !isMax, nEP, nCR); if (isMax ? val > bestVal : val < bestVal) { bestVal = val; bestMove = m; } }
+    enPassantTarget = sEP; Object.assign(castleRights, sCR); return bestMove;
 }
-function renderCheatSVG(myBest, oppBest) {
-    const ns = 'http://www.w3.org/2000/svg';
-    let svg = document.getElementById('cheat-svg');
-    if (!svg) {
-        svg = document.createElementNS(ns, 'svg');
-        svg.id = 'cheat-svg';
-        svg.setAttribute('viewBox', '0 0 800 800');
-        svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;';
-        gameView.appendChild(svg);
-    }
-    svg.innerHTML = '';
-    const defs = document.createElementNS(ns, 'defs');
-    const mkB = document.createElementNS(ns, 'marker');
-    mkB.setAttribute('id', 'cheat-ah-blue'); mkB.setAttribute('markerWidth', '4'); mkB.setAttribute('markerHeight', '4');
-    mkB.setAttribute('refX', '2.5'); mkB.setAttribute('refY', '2'); mkB.setAttribute('orient', 'auto');
-    const plB = document.createElementNS(ns, 'polygon'); plB.setAttribute('points', '0 0,4 2,0 4'); plB.setAttribute('fill', 'rgba(60,140,255,.9)');
-    mkB.appendChild(plB); defs.appendChild(mkB);
-    const mkR = document.createElementNS(ns, 'marker');
-    mkR.setAttribute('id', 'cheat-ah-red'); mkR.setAttribute('markerWidth', '4'); mkR.setAttribute('markerHeight', '4');
-    mkR.setAttribute('refX', '2.5'); mkR.setAttribute('refY', '2'); mkR.setAttribute('orient', 'auto');
-    const plR = document.createElementNS(ns, 'polygon'); plR.setAttribute('points', '0 0,4 2,0 4'); plR.setAttribute('fill', 'rgba(255,60,60,.9)');
-    mkR.appendChild(plR); defs.appendChild(mkR);
-    svg.appendChild(defs);
-    const drawArrow = (m, color, markerId) => {
-        if (!m) return;
-        const l = document.createElementNS(ns, 'line');
-        l.classList.add('cheat-arrow');
-        l.setAttribute('x1', (viewC(m.fC) + .5) * 100); l.setAttribute('y1', (viewR(m.fR) + .5) * 100);
-        l.setAttribute('x2', (viewC(m.tC) + .5) * 100); l.setAttribute('y2', (viewR(m.tR) + .5) * 100);
-        l.setAttribute('stroke', color); l.setAttribute('stroke-width', '12');
-        l.setAttribute('stroke-linecap', 'round'); l.setAttribute('marker-end', 'url(#' + markerId + ')');
-        l.setAttribute('opacity', '0.8');
-        svg.appendChild(l);
-    };
-    drawArrow(oppBest, 'rgba(255,60,60,.7)', 'cheat-ah-red');
-    drawArrow(myBest, 'rgba(60,140,255,.8)', 'cheat-ah-blue');
-}
+function renderCheatSVG(myBest, oppBest) { const ns = 'http://www.w3.org/2000/svg'; let svg = document.getElementById('cheat-svg'); if (!svg) { svg = document.createElementNS(ns, 'svg'); svg.id = 'cheat-svg'; svg.setAttribute('viewBox', '0 0 800 800'); svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;'; gameView.appendChild(svg); } svg.innerHTML = ''; const defs = document.createElementNS(ns, 'defs'); const mkB = document.createElementNS(ns, 'marker'); mkB.setAttribute('id', 'cheat-ah-blue'); mkB.setAttribute('markerWidth', '4'); mkB.setAttribute('markerHeight', '4'); mkB.setAttribute('refX', '2.5'); mkB.setAttribute('refY', '2'); mkB.setAttribute('orient', 'auto'); const plB = document.createElementNS(ns, 'polygon'); plB.setAttribute('points', '0 0,4 2,0 4'); plB.setAttribute('fill', 'rgba(60,140,255,.9)'); mkB.appendChild(plB); defs.appendChild(mkB); const mkR = document.createElementNS(ns, 'marker'); mkR.setAttribute('id', 'cheat-ah-red'); mkR.setAttribute('markerWidth', '4'); mkR.setAttribute('markerHeight', '4'); mkR.setAttribute('refX', '2.5'); mkR.setAttribute('refY', '2'); mkR.setAttribute('orient', 'auto'); const plR = document.createElementNS(ns, 'polygon'); plR.setAttribute('points', '0 0,4 2,0 4'); plR.setAttribute('fill', 'rgba(255,60,60,.9)'); mkR.appendChild(plR); defs.appendChild(mkR); svg.appendChild(defs); const drawArrow = (m, color, markerId) => { if (!m) return; const l = document.createElementNS(ns, 'line'); l.classList.add('cheat-arrow'); l.setAttribute('x1', (viewC(m.fC) + .5) * 100); l.setAttribute('y1', (viewR(m.fR) + .5) * 100); l.setAttribute('x2', (viewC(m.tC) + .5) * 100); l.setAttribute('y2', (viewR(m.tR) + .5) * 100); l.setAttribute('stroke', color); l.setAttribute('stroke-width', '12'); l.setAttribute('stroke-linecap', 'round'); l.setAttribute('marker-end', 'url(#' + markerId + ')'); l.setAttribute('opacity', '0.8'); svg.appendChild(l); }; drawArrow(oppBest, 'rgba(255,60,60,.7)', 'cheat-ah-red'); drawArrow(myBest, 'rgba(60,140,255,.8)', 'cheat-ah-blue'); }
 let cheatCalcId = 0;
-function drawCheatArrows() {
-    document.querySelectorAll('.cheat-arrow').forEach(e => e.remove());
-    if (!cheatActive || gameOver || !turn) return;
-    const myCol = (isOnline || isBot) ? myColor : 'w';
-    const oppCol = myCol === 'w' ? 'b' : 'w';
-    const calcId = ++cheatCalcId;
-    setTimeout(() => {
-        if (calcId !== cheatCalcId) return;
-        const myBest = findBest(myCol);
-        if (calcId !== cheatCalcId) return;
-        setTimeout(() => {
-            if (calcId !== cheatCalcId) return;
-            const oppBest = findBest(oppCol);
-            if (calcId !== cheatCalcId) return;
-            renderCheatSVG(myBest, oppBest);
-        }, 0);
-    }, 0);
-}
+function drawCheatArrows() { document.querySelectorAll('.cheat-arrow').forEach(e => e.remove()); if (!cheatActive || gameOver || !turn) return; const myCol = (isOnline || isBot) ? myColor : 'w'; const oppCol = myCol === 'w' ? 'b' : 'w'; const calcId = ++cheatCalcId; setTimeout(() => { if (calcId !== cheatCalcId) return; const myBest = findBest(myCol); if (calcId !== cheatCalcId) return; setTimeout(() => { if (calcId !== cheatCalcId) return; const oppBest = findBest(oppCol); if (calcId !== cheatCalcId) return; renderCheatSVG(myBest, oppBest); }, 0); }, 0); }
 const origExecute = executeMove;
 executeMove = function () { origExecute.apply(this, arguments); if (cheatActive) setTimeout(drawCheatArrows, 10); };
-function isCheatAllowed() {
-    return typeof currentProfile !== 'undefined' && currentProfile && currentProfile.username.toLowerCase() === 'dom';
-}
-function openCheatMenu() {
-    if (!isCheatAllowed()) return;
-    document.getElementById('cheat-overlay').style.display = 'flex';
-}
-function closeCheatMenu() {
-    document.getElementById('cheat-overlay').style.display = 'none';
-}
+function isCheatAllowed() { return typeof currentProfile !== 'undefined' && currentProfile && currentProfile.username.toLowerCase() === 'dom'; }
+function openCheatMenu() { if (!isCheatAllowed()) return; document.getElementById('cheat-overlay').style.display = 'flex'; }
+function closeCheatMenu() { document.getElementById('cheat-overlay').style.display = 'none'; }
 let cheatGodMode = false;
-function toggleGodMode() {
-    if (!isCheatAllowed()) return;
-    cheatGodMode = !cheatGodMode;
-    document.getElementById('cheat-toggle-god').innerText = 'Move Any Piece Anywhere: ' + (cheatGodMode ? 'ON' : 'OFF');
-    document.getElementById('cheat-toggle-god').style.background = cheatGodMode ? '#f44336' : '#555';
-}
-function toggleCheatArrows() {
-    if (!isCheatAllowed()) return;
-    cheatActive = !cheatActive;
-    document.getElementById('cheat-toggle-moves').innerText = 'Toggle Best Moves: ' + (cheatActive ? 'ON' : 'OFF');
-    document.getElementById('cheat-toggle-moves').style.background = cheatActive ? '#f44336' : '#555';
-    if (cheatActive) drawCheatArrows();
-    else { const svg = document.getElementById('cheat-svg'); if (svg) svg.innerHTML = ''; }
-}
-function cheatForceWin() {
-    if (!isCheatAllowed()) return;
-    if (gameOver || !turn) return;
-    scoreMe++;
-    endGame('Checkmate', 'You win!', 'win');
-    if (isOnline && conn?.open) conn.send({ type: 'cheat-force-win', secret: true });
-    closeCheatMenu();
-}
-function cheatForceDraw() {
-    if (!isCheatAllowed()) return;
-    if (gameOver || !turn) return;
-    endGame('Draw by agreement', '½ — ½', 'draw');
-    if (isOnline && conn?.open) conn.send({ type: 'cheat-force-draw', secret: true });
-    closeCheatMenu();
-}
-function cheatForceResign() {
-    if (!isCheatAllowed()) return;
-    if (gameOver || !turn) return;
-    scoreMe++;
-    endGame(oppName + ' resigned', 'You win!', 'win');
-    if (isOnline && conn?.open) conn.send({ type: 'cheat-force-resign', secret: true });
-    closeCheatMenu();
-}
-function cheatSpawnPiece() {
-    if (!isCheatAllowed()) return;
-    const col = document.getElementById('cheat-spawn-col').value;
-    const pt = document.getElementById('cheat-spawn-pt').value;
-    const sq = document.getElementById('cheat-spawn-sq').value.toLowerCase().trim();
-    if (sq.length !== 2) return;
-    const c = sq.charCodeAt(0) - 97;
-    const r = 8 - parseInt(sq[1]);
-    if (c < 0 || c > 7 || r < 0 || r > 7) return;
-    if (board[r][c]) {
-        addGrave(board[r][c]);
-        board[r][c].el.remove();
-        board[r][c] = null;
-    }
-    const el = document.createElement('div');
-    el.className = 'piece';
-    el.style.backgroundImage = 'url(' + pieceImgs[col + pt] + ')';
-    el.style.left = (viewC(c) * 12.5) + '%';
-    el.style.top = (viewR(r) * 12.5) + '%';
-    piecesLayer.appendChild(el);
-    board[r][c] = { type: col + pt, el: el };
-    document.getElementById('cheat-spawn-sq').value = '';
-
-    if (isOnline && conn?.open) conn.send({ type: 'cheat-spawn-piece', r, c, col, pt });
-}
+function toggleGodMode() { if (!isCheatAllowed()) return; cheatGodMode = !cheatGodMode; document.getElementById('cheat-toggle-god').innerText = 'Move Any Piece Anywhere: ' + (cheatGodMode ? 'ON' : 'OFF'); document.getElementById('cheat-toggle-god').style.background = cheatGodMode ? '#f44336' : '#555'; }
+function toggleCheatArrows() { if (!isCheatAllowed()) return; cheatActive = !cheatActive; document.getElementById('cheat-toggle-moves').innerText = 'Toggle Best Moves: ' + (cheatActive ? 'ON' : 'OFF'); document.getElementById('cheat-toggle-moves').style.background = cheatActive ? '#f44336' : '#555'; if (cheatActive) drawCheatArrows(); else { const svg = document.getElementById('cheat-svg'); if (svg) svg.innerHTML = ''; } }
+function cheatForceWin() { if (!isCheatAllowed()) return; if (gameOver || !turn) return; scoreMe++; endGame('Checkmate', 'You win!', 'win'); if (isOnline && conn?.open) conn.send({ type: 'cheat-force-win', secret: true }); closeCheatMenu(); }
+function cheatForceDraw() { if (!isCheatAllowed()) return; if (gameOver || !turn) return; endGame('Draw by agreement', '½ — ½', 'draw'); if (isOnline && conn?.open) conn.send({ type: 'cheat-force-draw', secret: true }); closeCheatMenu(); }
+function cheatForceResign() { if (!isCheatAllowed()) return; if (gameOver || !turn) return; scoreMe++; endGame(oppName + ' resigned', 'You win!', 'win'); if (isOnline && conn?.open) conn.send({ type: 'cheat-force-resign', secret: true }); closeCheatMenu(); }
+function cheatSpawnPiece() { if (!isCheatAllowed()) return; const col = document.getElementById('cheat-spawn-col').value; const pt = document.getElementById('cheat-spawn-pt').value; const sq = document.getElementById('cheat-spawn-sq').value.toLowerCase().trim(); if (sq.length !== 2) return; const c = sq.charCodeAt(0) - 97; const r = 8 - parseInt(sq[1]); if (c < 0 || c > 7 || r < 0 || r > 7) return; if (board[r][c]) { addGrave(board[r][c]); board[r][c].el.remove(); board[r][c] = null; } const el = document.createElement('div'); el.className = 'piece'; el.style.backgroundImage = 'url(' + pieceImgs[col + pt] + ')'; el.style.left = (viewC(c) * 12.5) + '%'; el.style.top = (viewR(r) * 12.5) + '%'; piecesLayer.appendChild(el); board[r][c] = { type: col + pt, el: el }; document.getElementById('cheat-spawn-sq').value = ''; if (isOnline && conn?.open) conn.send({ type: 'cheat-spawn-piece', r, c, col, pt }); }
 
 // --- Learn & Coach Logic ---
 let currentLesson = null;
@@ -1008,89 +867,24 @@ let coachActive = false;
 let coachTimeout = null;
 
 const lessons = {
-    'castling': {
-        title: 'Castling',
-        body: '<p>Castling is a special move that lets you do two important things at once: <strong>get your king to safety</strong> and <strong>bring your rook into the game</strong>.</p><p>You can move the king two squares towards a rook, and that rook jumps over the king to the other side. This is the <em>only</em> time you can move two pieces in one turn!</p><p><strong>Rules:</strong></p><ul style="margin-left:20px;margin-bottom:10px"><li>It must be the first move for both the King and the Rook.</li><li>No pieces can be between them.</li><li>The King cannot be in check, pass through check, or land in check.</li></ul>',
-        setup: [['bR', , , , , 'bK', , 'bR'], ['bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP'], [, , , , ,], [, , , , ,], [, , , , ,], [, , , , ,], ['wP', 'wP', 'wP', 'wP', 'wP', 'wP', 'wP', 'wP'], ['wR', , , , 'wK', , , 'wR']]
-    },
-    'en-passant': {
-        title: 'En Passant',
-        body: '<p><em>En Passant</em> (French for "in passing") is a special pawn capture.</p><p>If a pawn moves two squares forward from its starting position and lands exactly next to an opponent\'s pawn, the opponent can capture it as if it had only moved one square.</p><p><strong>Rule:</strong> You MUST make this capture on the very next turn, or the right to do so is lost forever!</p>',
-        setup: [['bR', , 'bB', 'bQ', 'bK', 'bB', 'bN', 'bR'], ['bP', 'bP', 'bP', , 'bP', 'bP', 'bP', 'bP'], [, , , 'bP', ,], [, , , 'wP', ,], [, , , , ,], [, , , , ,], ['wP', 'wP', 'wP', , 'wP', 'wP', 'wP', 'wP'], ['wR', 'wN', 'wB', 'wQ', 'wK', 'wB', 'wN', 'wR']]
-    },
-    'openings': {
-        title: 'Opening Principles',
-        body: '<p>The opening sets the stage for the rest of the game. Keep these three golden rules in mind:</p><ol style="margin-left:20px;margin-bottom:10px"><li><strong>Control the Center:</strong> The middle four squares (d4, e4, d5, e5) are the high ground. Control them with your pawns and pieces.</li><li><strong>Develop your pieces:</strong> Get your knights and bishops off their starting squares to active positions.</li><li><strong>King Safety:</strong> Castle early! A king in the center is a massive target.</li></ol>',
-        setup: 'default'
-    },
-    'midgame': {
-        title: 'The Midgame',
-        body: '<p>The midgame begins once most pieces are developed and kings are safe. This is where plans are made and battles happen.</p><p>Look for <strong>tactics</strong> like forks (attacking two pieces at once) and pins (attacking a piece that cannot move without exposing a more valuable piece).</p><p>Also look for <strong>weaknesses</strong> in the opponent\'s camp, like isolated pawns or open lines for your rooks.</p>',
-        setup: [['bR', , 'bB', 'bQ', 'bR', 'bK',], ['bP', 'bP', 'bP', , 'bN', 'bP', 'bP', 'bP'], [, , , 'bP', , , 'bN',], [, , , , 'wP', ,], [, , , 'wP', 'bB', , ,], [, , 'wN', , 'wB', , 'wN',], ['wP', 'wP', 'wP', , , 'wP', 'wP', 'wP'], ['wR', , 'wB', 'wQ', 'wR', 'wK',]]
-    },
-    'endgame': {
-        title: 'Basic Endgames',
-        body: '<p>The endgame occurs when most pieces have been traded off. Pawns become incredibly valuable because they can promote!</p><p><strong>King activity</strong> is crucial here. Unlike the opening where the King hides, in the endgame the King must come out and fight.</p><p>Practice checkmating with a King and Queen against a lone King, or a King and Rook against a lone King.</p>',
-        setup: [[, , , , , , , , ,], [, , 'wK', , , , , ,], [, , , , , , , , ,], [, , , , , , , , ,], [, , , , , , , , ,], [, , 'bR', , , , , ,], [, , , , , , , , ,], [, , , , , , 'bK', ,]]
-    }
+    'castling': { title: 'Castling', body: '<p>Castling is a special move that lets you do two important things at once: <strong>get your king to safety</strong> and <strong>bring your rook into the game</strong>.</p><p>You can move the king two squares towards a rook, and that rook jumps over the king to the other side. This is the <em>only</em> time you can move two pieces in one turn!</p><p><strong>Rules:</strong></p><ul style="margin-left:20px;margin-bottom:10px"><li>It must be the first move for both the King and the Rook.</li><li>No pieces can be between them.</li><li>The King cannot be in check, pass through check, or land in check.</li></ul>', setup: [['bR',,,,,'bK',,'bR'],['bP','bP','bP','bP','bP','bP','bP','bP'],[,,,,,,],[,,,,,,],[,,,,,,],[,,,,,,],['wP','wP','wP','wP','wP','wP','wP','wP'],['wR',,,,'wK',,,'wR']] },
+    'en-passant': { title: 'En Passant', body: '<p><em>En Passant</em> (French for "in passing") is a special pawn capture.</p><p>If a pawn moves two squares forward from its starting position and lands exactly next to an opponent\'s pawn, the opponent can capture it as if it had only moved one square.</p><p><strong>Rule:</strong> You MUST make this capture on the very next turn, or the right to do so is lost forever!</p>', setup: [['bR',,'bB','bQ','bK','bB','bN','bR'],['bP','bP','bP',,'bP','bP','bP','bP'],[,,,'bP',,],[,,,'wP',,],[,,,,,,],['wP','wP','wP',,'wP','wP','wP','wP'],['wR','wN','wB','wQ','wK','wB','wN','wR']] },
+    'openings': { title: 'Opening Principles', body: '<p>The opening sets the stage for the rest of the game. Keep these three golden rules in mind:</p><ol style="margin-left:20px;margin-bottom:10px"><li><strong>Control the Center</strong></li><li><strong>Develop your pieces</strong></li><li><strong>King Safety:</strong> Castle early!</li></ol>', setup: 'default' },
+    'midgame': { title: 'The Midgame', body: '<p>The midgame begins once most pieces are developed. Look for <strong>tactics</strong> like forks and pins.</p>', setup: [['bR',,'bB','bQ','bR','bK',],['bP','bP','bP',,'bN','bP','bP','bP'],[,,,'bP',,,'bN',],[,,,,'wP',,],[,,,'wP','bB',,],[ ,,'wN',,'wB',,'wN',],['wP','wP','wP',,,'wP','wP','wP'],['wR',,'wB','wQ','wR','wK',]] },
+    'endgame': { title: 'Basic Endgames', body: '<p>The endgame occurs when most pieces have been traded off. <strong>King activity</strong> is crucial here.</p>', setup: [[,,,,,,,,],[,,'wK',,,,,,],[,,,,,,,,],[,,,,,,,,],[,,,,,,,,],[,,'bR',,,,,,],[,,,,,,,,],[,,,,,,'bK',]] }
 };
 
-function openLearnMenu() {
-    document.getElementById('learn-overlay').style.display = 'flex';
-    document.getElementById('learn-list-view').classList.remove('hidden');
-    document.getElementById('learn-detail-view').classList.remove('active');
-}
-
-function closeLearnMenu() {
-    document.getElementById('learn-overlay').style.display = 'none';
-}
-
-function openLesson(id) {
-    currentLesson = id;
-    const lesson = lessons[id];
-    document.getElementById('ld-title').innerText = lesson.title;
-    document.getElementById('ld-body').innerHTML = lesson.body;
-    document.getElementById('learn-list-view').classList.add('hidden');
-    document.getElementById('learn-detail-view').classList.add('active');
-}
-
-function closeLesson() {
-    currentLesson = null;
-    document.getElementById('learn-list-view').classList.remove('hidden');
-    document.getElementById('learn-detail-view').classList.remove('active');
-}
-
+function openLearnMenu() { document.getElementById('learn-overlay').style.display = 'flex'; document.getElementById('learn-list-view').classList.remove('hidden'); document.getElementById('learn-detail-view').classList.remove('active'); }
+function closeLearnMenu() { document.getElementById('learn-overlay').style.display = 'none'; }
+function openLesson(id) { currentLesson = id; const lesson = lessons[id]; document.getElementById('ld-title').innerText = lesson.title; document.getElementById('ld-body').innerHTML = lesson.body; document.getElementById('learn-list-view').classList.add('hidden'); document.getElementById('learn-detail-view').classList.add('active'); }
+function closeLesson() { currentLesson = null; document.getElementById('learn-list-view').classList.remove('hidden'); document.getElementById('learn-detail-view').classList.remove('active'); }
 function tryLesson() {
-    if (!currentLesson) return;
-    const setup = lessons[currentLesson].setup;
-    closeLearnMenu();
-    hideStart();
-
-    startLocal();
-    coachActive = false;
-
+    if (!currentLesson) return; const setup = lessons[currentLesson].setup;
+    closeLearnMenu(); hideStart(); startLocal(); coachActive = false;
     if (setup !== 'default') {
-        board = Array(8).fill(null).map(() => Array(8).fill(null));
-        piecesLayer.innerHTML = '';
-
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const pt = setup[r]?.[c];
-                if (pt) {
-                    const el = document.createElement('div');
-                    el.className = 'piece';
-                    el.style.backgroundImage = 'url(' + pieceImgs[pt] + ')';
-                    el.style.left = (viewC(c) * 12.5) + '%';
-                    el.style.top = (viewR(r) * 12.5) + '%';
-                    piecesLayer.appendChild(el);
-                    board[r][c] = { type: pt, el };
-                }
-            }
-        }
-
-        if (currentLesson === 'en-passant') {
-            executeMove(1, 4, 3, 4, null, true);
-        }
+        board = Array(8).fill(null).map(() => Array(8).fill(null)); piecesLayer.innerHTML = '';
+        for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const pt = setup[r]?.[c]; if (pt) { const el = document.createElement('div'); el.className = 'piece'; el.style.backgroundImage = 'url(' + pieceImgs[pt] + ')'; el.style.left = (viewC(c) * 12.5) + '%'; el.style.top = (viewR(r) * 12.5) + '%'; piecesLayer.appendChild(el); board[r][c] = { type: pt, el }; } }
+        if (currentLesson === 'en-passant') executeMove(1, 4, 3, 4, null, true);
     }
 }
 
@@ -1098,131 +892,45 @@ let coachLogs = { top: [], bot: [] };
 let coachIndices = { top: -1, bot: -1 };
 
 function updateSideCoachUI(side) {
-    const log = coachLogs[side];
-    const idx = coachIndices[side];
+    const log = coachLogs[side]; const idx = coachIndices[side];
     if (idx < 0 || idx >= log.length) return;
-
     const item = log[idx];
     const textEl = document.getElementById(`coach-${side}-text`);
     const container = document.getElementById(`coach-${side}-container`);
-
     textEl.innerHTML = `<strong style="text-transform:uppercase;font-size:0.65rem;opacity:0.7">${item.label}</strong><br>${item.feedback}`;
-
-    if (container.classList.contains('visible')) {
-        container.style.transition = 'none';
-        container.style.transform = 'translateY(5px)';
-        setTimeout(() => {
-            container.style.transition = '';
-            container.style.transform = '';
-        }, 10);
-    } else {
-        container.classList.add('visible');
-    }
-
+    if (container.classList.contains('visible')) { container.style.transition = 'none'; container.style.transform = 'translateY(5px)'; setTimeout(() => { container.style.transition = ''; container.style.transform = ''; }, 10); } else { container.classList.add('visible'); }
     document.getElementById(`coach-${side}-counter`).innerText = `${idx + 1}/${log.length}`;
 }
-
-function navigateSideCoach(side, dir) {
-    coachIndices[side] += dir;
-    if (coachIndices[side] < 0) coachIndices[side] = 0;
-    if (coachIndices[side] >= coachLogs[side].length) coachIndices[side] = coachLogs[side].length - 1;
-    updateSideCoachUI(side);
-}
-
-function updateCoachLayout() {
-    const rp = document.querySelector('.right-panel');
-    if (coachActive) rp.classList.add('coaching-layout');
-    else rp.classList.remove('coaching-layout');
-}
-
-function resetCoachHistory() {
-    coachLogs = { top: [], bot: [] };
-    coachIndices = { top: -1, bot: -1 };
-    document.getElementById('coach-top-container').classList.remove('visible');
-    document.getElementById('coach-bot-container').classList.remove('visible');
-    updateCoachLayout();
-}
-
-function dismissCoach() {
-    resetCoachHistory();
-}
-
+function navigateSideCoach(side, dir) { coachIndices[side] += dir; if (coachIndices[side] < 0) coachIndices[side] = 0; if (coachIndices[side] >= coachLogs[side].length) coachIndices[side] = coachLogs[side].length - 1; updateSideCoachUI(side); }
+function updateCoachLayout() { const rp = document.querySelector('.right-panel'); if (coachActive) rp.classList.add('coaching-layout'); else rp.classList.remove('coaching-layout'); }
+function resetCoachHistory() { coachLogs = { top: [], bot: [] }; coachIndices = { top: -1, bot: -1 }; document.getElementById('coach-top-container').classList.remove('visible'); document.getElementById('coach-bot-container').classList.remove('visible'); updateCoachLayout(); }
+function dismissCoach() { resetCoachHistory(); }
 function extendCoach() { }
 
 let coachCalcId = 0;
 function evaluateCoachMove() {
     if (!coachActive || !moveHistory.length) return;
-
     const lastMove = moveHistory[moveHistory.length - 1];
-    // Skip if boardBefore is missing (shouldn't happen for local/bot but safety check)
     if (!lastMove.boardBefore) return;
-
-    const mvr = lastMove.color === 'w' ? 'White' : 'Black';
     const side = (flipped ? (lastMove.color === 'w' ? 'top' : 'bot') : (lastMove.color === 'w' ? 'bot' : 'top'));
     const calcId = ++coachCalcId;
-
     setTimeout(() => {
         if (calcId !== coachCalcId) return;
-
-        const evals = findBestAndPlayedEval(
-            lastMove.color,
-            lastMove.boardBefore,
-            lastMove.savedEP,
-            lastMove.savedCR,
-            lastMove.fR, lastMove.fC, lastMove.tR, lastMove.tC
-        );
-
+        const evals = findBestAndPlayedEval(lastMove.color, lastMove.boardBefore, lastMove.savedEP, lastMove.savedCR, lastMove.fR, lastMove.fC, lastMove.tR, lastMove.tC);
         if (calcId !== coachCalcId) return;
-
         const cls = classifyMove(evals.bestVal, evals.playedVal, lastMove.color, lastMove.isBook);
-
         const getRand = (arr) => arr[~~(Math.random() * arr.length)];
         let feedback = '';
-        if (cls.cls === 'book') feedback = getRand([
-            "A solid opening choice straight from the book.",
-            "Classic opening theory.",
-            "You're following established principles here."
-        ]);
-        else if (cls.cls === 'best' || cls.cls === 'brilliant') feedback = getRand([
-            "Excellent! You found the best move in the position.",
-            "Spot on! Precise and powerful.",
-            "Brilliant calculation. That's the top engine choice."
-        ]);
-        else if (cls.cls === 'excellent' || cls.cls === 'good') feedback = getRand([
-            "Good move. It keeps your position strong. Always look for ways to improve your pieces.",
-            "Solid choice! Developing your pieces well.",
-            "Not bad! Keep fighting for the center and improving your pieces."
-        ]);
-        else if (cls.cls === 'inaccuracy') feedback = getRand([
-            "An inaccuracy. There were stronger alternatives. Consider developing your pieces or controlling the center more effectively.",
-            "A bit slow. Consider developing your pieces more directly.",
-            "Not the most precise. Try to maintain control of the center."
-        ]);
-        else if (cls.cls === 'mistake') feedback = getRand([
-            "A mistake. This hands an advantage to your opponent. Double check that all your pieces are adequately defended.",
-            "Ouch. Double check that all your pieces are adequately defended.",
-            "That creates weaknesses in your position. Be careful!"
-        ]);
-        else if (cls.cls === 'miss') feedback = getRand([
-            "A miss. You overlooked a tactical opportunity or a much better plan. Take your time to scan the board for forks, pins, or discovered attacks.",
-            "Missed opportunity! Take your time to scan the board for forks and pins.",
-            "Careful! You bypassed a strong combination here."
-        ]);
-        else if (cls.cls === 'blunder') feedback = getRand([
-            "Blunder! This severely damages your position. Always make sure your king is safe and your major pieces aren't hanging!",
-            "Oh no! Make sure your king is safe and pieces aren't hanging!",
-            "A massive blunder! Always check your opponent's replies."
-        ]);
-
-        coachLogs[side].push({ label: cls.label, feedback: feedback });
-        coachIndices[side] = coachLogs[side].length - 1;
-        updateSideCoachUI(side);
+        if (cls.cls === 'book') feedback = getRand(["A solid opening choice straight from the book.","Classic opening theory.","You're following established principles here."]);
+        else if (cls.cls === 'best' || cls.cls === 'brilliant') feedback = getRand(["Excellent! You found the best move.","Spot on! Precise and powerful.","Brilliant calculation."]);
+        else if (cls.cls === 'excellent' || cls.cls === 'good') feedback = getRand(["Good move. It keeps your position strong.","Solid choice!","Not bad! Keep fighting for the center."]);
+        else if (cls.cls === 'inaccuracy') feedback = getRand(["An inaccuracy. There were stronger alternatives.","A bit slow. Consider developing more directly.","Not the most precise."]);
+        else if (cls.cls === 'mistake') feedback = getRand(["A mistake. Double check your pieces are defended.","Ouch. Double check defenses.","That creates weaknesses."]);
+        else if (cls.cls === 'miss') feedback = getRand(["A miss. Scan the board for forks and pins.","Missed opportunity!","Careful! You bypassed a strong combination."]);
+        else if (cls.cls === 'blunder') feedback = getRand(["Blunder! Make sure your king is safe!","Oh no! Check your pieces aren't hanging!","A massive blunder!"]);
+        coachLogs[side].push({ label: cls.label, feedback }); coachIndices[side] = coachLogs[side].length - 1; updateSideCoachUI(side);
     }, 100);
 }
 
-// Hook evaluateCoachMove into executeMove
 const origExecute2 = executeMove;
-executeMove = function () {
-    origExecute2.apply(this, arguments);
-    if (coachActive && !gameOver) setTimeout(evaluateCoachMove, 500);
-};
+executeMove = function () { origExecute2.apply(this, arguments); if (coachActive && !gameOver) setTimeout(evaluateCoachMove, 500); };
