@@ -69,11 +69,17 @@ function updateAccountUI(loggedIn) {
         if (welcomeEl) welcomeEl.style.display = '';
         if (welcomeName) welcomeName.textContent = 'Welcome, ' + currentProfile.username + '!';
         if (startSub) startSub.textContent = 'Choose how to play';
+
+        const cheatBtn = document.getElementById('cheat-plus-btn');
+        if (cheatBtn) cheatBtn.style.display = (currentProfile.username.toLowerCase() === 'dom') ? 'flex' : 'none';
     } else {
         label.textContent = 'Sign In';
         btn.classList.remove('logged-in');
         if (authRow) authRow.style.display = '';
         if (welcomeEl) welcomeEl.style.display = 'none';
+
+        const cheatBtn = document.getElementById('cheat-plus-btn');
+        if (cheatBtn) cheatBtn.style.display = 'none';
     }
 }
 
@@ -101,10 +107,14 @@ function renderOlFriendsList() {
     const listEl = document.getElementById('ol-fp-list');
     if (!listEl) return;
 
-    const buildItem = (f) => `
+    const buildItem = (f) => {
+        const avatarHtml = f.avatar ?
+            `<div class="fp-avatar" style="background-image:url(${f.avatar});background-size:cover;background-position:center;background-color:transparent;color:transparent;">${f.username[0].toUpperCase()}</div>` :
+            `<div class="fp-avatar">${f.username[0].toUpperCase()}</div>`;
+        return `
         <div class="ol-friend-item">
             <div class="ol-friend-info">
-                <div class="fp-avatar">${f.username[0].toUpperCase()}</div>
+                ${avatarHtml}
                 <div>
                     <div class="fp-friend-name">${hEsc(f.username)}</div>
                     <div class="fp-online-dot ${f.online ? 'is-online' : ''}">${f.online ? '\u25cf Online' : '\u25cb Offline'}</div>
@@ -112,6 +122,7 @@ function renderOlFriendsList() {
             </div>
             <button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>
         </div>`;
+    };
 
     if (friendsData.length === 0) {
         listEl.innerHTML = '<div class="fp-empty">No friends yet. Search above!</div>';
@@ -127,7 +138,10 @@ function renderOlFriendsList() {
             .then(snap => {
                 snap.forEach(doc => {
                     const f = friendsData.find(fr => fr.uid === doc.id);
-                    if (f) f.online = doc.data().online || false;
+                    if (f) {
+                        f.online = doc.data().online || false;
+                        if (doc.data().avatar) f.avatar = doc.data().avatar;
+                    }
                 });
                 listEl.innerHTML = friendsData.map(buildItem).join('');
             }).catch(() => { });
@@ -172,7 +186,10 @@ async function olSearchUser(uq) {
             } else {
                 action = '<button class="fp-btn fp-add" onclick="sendFriendRequest(\'' + uid + '\',\'' + aEsc(uname) + '\')">+ Add</button>';
             }
-            html += '<div class="fp-search-card" style="margin-bottom:4px"><div class="fp-friend-info"><div class="fp-avatar">' + uname[0].toUpperCase() + '</div><span class="fp-friend-name">' + hEsc(uname) + '</span></div>' + action + '</div>';
+            var avatarHtml = doc.data().avatar ?
+                '<div class="fp-avatar" style="background-image:url(' + doc.data().avatar + ');background-size:cover;background-position:center;background-color:transparent;color:transparent;">' + uname[0].toUpperCase() + '</div>' :
+                '<div class="fp-avatar">' + uname[0].toUpperCase() + '</div>';
+            html += '<div class="fp-search-card" style="margin-bottom:4px;cursor:pointer;" onclick="showUserProfile(\'' + uid + '\')"><div class="fp-friend-info">' + avatarHtml + '<span class="fp-friend-name">' + hEsc(uname) + '</span></div>' + action + '</div>';
         }
         el.innerHTML = html || '<div class="fp-no-result">No users found</div>';
     } catch (e) { el.innerHTML = '<div class="fp-no-result">Error. Try again.</div>'; }
@@ -247,11 +264,12 @@ async function doSignUp() {
         batch.set(db.collection('users').doc(cred.user.uid), {
             username, usernameLower: username.toLowerCase(), email,
             online: true, lastSeen: firebase.firestore.FieldValue.serverTimestamp(),
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            elo: 225
         });
         batch.set(db.collection('usernames').doc(username.toLowerCase()), { uid: cred.user.uid, username });
         await batch.commit();
-        currentProfile = { username, email, online: true };
+        currentProfile = { username, email, online: true, elo: 225 };
         hideAuthLoading();
         closeAuthPanel();
         showLoginSuccess();
@@ -301,7 +319,56 @@ function openFriendsPanel() {
     const uEl = document.getElementById('fp-username');
     if (uEl && currentProfile) uEl.textContent = currentProfile.username;
     const av = document.getElementById('fp-avatar-main');
-    if (av && currentProfile) av.textContent = currentProfile.username[0].toUpperCase();
+    if (av && currentProfile) {
+        if (currentProfile.avatar) {
+            av.textContent = '';
+            av.style.backgroundImage = 'url(' + currentProfile.avatar + ')';
+            av.style.backgroundSize = 'cover';
+            av.style.backgroundPosition = 'center';
+            av.style.backgroundColor = 'transparent';
+        } else {
+            av.textContent = currentProfile.username[0].toUpperCase();
+            av.style.backgroundImage = '';
+            av.style.backgroundColor = '';
+        }
+    }
+    loadStats();
+}
+
+function handleAvatarUpload(input) {
+    const file = input.files[0];
+    if (!file || !currentUser) return;
+    const reader = new FileReader();
+    reader.onload = function (e) {
+        const img = new Image();
+        img.onload = function () {
+            const canvas = document.createElement('canvas');
+            canvas.width = 80; canvas.height = 80;
+            const ctx = canvas.getContext('2d');
+            const s = Math.min(img.width, img.height);
+            const sx = (img.width - s) / 2, sy = (img.height - s) / 2;
+            ctx.drawImage(img, sx, sy, s, s, 0, 0, 80, 80);
+            const b64 = canvas.toDataURL('image/webp', 0.7);
+            db.collection('users').doc(currentUser.uid).update({ avatar: b64 }).then(() => {
+                currentProfile.avatar = b64;
+                applyAvatar(document.getElementById('fp-avatar-main'), b64);
+                showMsg('Avatar updated!');
+            }).catch(() => showMsg('Failed to save avatar.'));
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+    input.value = '';
+}
+
+function applyAvatar(el, b64) {
+    if (b64) {
+        el.textContent = '';
+        el.style.backgroundImage = 'url(' + b64 + ')';
+        el.style.backgroundSize = 'cover';
+        el.style.backgroundPosition = 'center';
+        el.style.backgroundColor = 'transparent';
+    }
 }
 
 function closeFriendsPanel() { document.getElementById('friends-overlay').classList.remove('open'); }
@@ -361,10 +428,14 @@ function renderFriendsList() {
     if (friendsData.length === 0) {
         listEl.innerHTML = '<div class="fp-empty">No friends yet. Search above!</div>';
     } else {
-        const buildList = (arr) => arr.map(f => `
+        const buildList = (arr) => arr.map(f => {
+            const avatarHtml = f.avatar ?
+                `<div class="fp-avatar" style="background-image:url(${f.avatar});background-size:cover;background-position:center;background-color:transparent;color:transparent;">${f.username[0].toUpperCase()}</div>` :
+                `<div class="fp-avatar">${f.username[0].toUpperCase()}</div>`;
+            return `
             <div class="fp-friend-item">
-                <div class="fp-friend-info">
-                    <div class="fp-avatar">${f.username[0].toUpperCase()}</div>
+                <div class="fp-friend-info" style="cursor:pointer;" onclick="showUserProfile('${f.uid}')">
+                    ${avatarHtml}
                     <div>
                         <div class="fp-friend-name">${hEsc(f.username)}</div>
                         <div class="fp-online-dot ${f.online ? 'is-online' : ''}">${f.online ? '\u25cf Online' : '\u25cb Offline'}</div>
@@ -374,7 +445,8 @@ function renderFriendsList() {
                     <button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>
                     <button class="fp-btn fp-decline" onclick="removeFriend('${f.id}','${aEsc(f.username)}')" title="Remove">\u2715</button>
                 </div>
-            </div>`).join('');
+            </div>`;
+        }).join('');
         listEl.innerHTML = buildList(friendsData);
 
         const uids = friendsData.map(f => f.uid);
@@ -385,7 +457,10 @@ function renderFriendsList() {
                 .then(snap => {
                     snap.forEach(doc => {
                         const f = friendsData.find(fr => fr.uid === doc.id);
-                        if (f) f.online = doc.data().online || false;
+                        if (f) {
+                            f.online = doc.data().online || false;
+                            if (doc.data().avatar) f.avatar = doc.data().avatar;
+                        }
                     });
                     if (listEl) listEl.innerHTML = buildList(friendsData);
                 }).catch(() => { });
@@ -429,7 +504,10 @@ async function searchUser(query) {
             } else {
                 action = `<button class="fp-btn fp-add" onclick="sendFriendRequest('${uid}','${aEsc(uname)}')">+ Add</button>`;
             }
-            html += `<div class="fp-search-card" style="margin-bottom:4px"><div class="fp-friend-info"><div class="fp-avatar">${uname[0].toUpperCase()}</div><span class="fp-friend-name">${hEsc(uname)}</span></div>${action}</div>`;
+            const avatarHtml = doc.data().avatar ?
+                `<div class="fp-avatar" style="background-image:url(${doc.data().avatar});background-size:cover;background-position:center;background-color:transparent;color:transparent;">${uname[0].toUpperCase()}</div>` :
+                `<div class="fp-avatar">${uname[0].toUpperCase()}</div>`;
+            html += `<div class="fp-search-card" style="margin-bottom:4px;cursor:pointer;" onclick="showUserProfile('${uid}')"><div class="fp-friend-info">${avatarHtml}<span class="fp-friend-name">${hEsc(uname)}</span></div>${action}</div>`;
         }
         el.innerHTML = html || '<div class="fp-no-result">No users found</div>';
     } catch (e) { el.innerHTML = '<div class="fp-no-result">Error. Try again.</div>'; }
@@ -488,34 +566,61 @@ async function challengeFriend(friendUid, friendUsername) {
 
 function listenForChallengeAccepted(docId, friendUsername) {
     if (challengeDocUnsub) challengeDocUnsub();
-    openOnlineMenu();
-    setOlStatus('Waiting for <strong>' + hEsc(friendUsername) + '</strong> to accept\u2026', 'success');
-    document.getElementById('btn-create').disabled = true;
-    document.getElementById('btn-join').disabled = true;
-    document.getElementById('btn-random').disabled = true;
 
     challengeDocUnsub = db.collection('challenges').doc(docId).onSnapshot(snap => {
         const d = snap.data();
         if (!d) return;
         if (d.status === 'accepted' && d.roomCode) {
             if (challengeDocUnsub) { challengeDocUnsub(); challengeDocUnsub = null; }
-            setOlStatus('Challenge accepted! Connecting\u2026', 'success');
-            document.getElementById('ol-name').value = currentProfile?.username || 'Player';
-            document.getElementById('ol-room').value = d.roomCode;
-            setTimeout(() => {
-                joinRoom();
-                document.getElementById('btn-create').disabled = false;
-                document.getElementById('btn-join').disabled = false;
-                document.getElementById('btn-random').disabled = false;
-            }, 500);
+            showAcceptedToast(docId, friendUsername, d.roomCode);
         } else if (d.status === 'declined') {
             if (challengeDocUnsub) { challengeDocUnsub(); challengeDocUnsub = null; }
-            setOlStatus(hEsc(friendUsername) + ' declined the challenge.', 'error');
-            document.getElementById('btn-create').disabled = false;
-            document.getElementById('btn-join').disabled = false;
-            document.getElementById('btn-random').disabled = false;
+            showMsg(hEsc(friendUsername) + ' declined your challenge.');
         }
     });
+}
+
+function showAcceptedToast(docId, friendUsername, roomCode) {
+    const tId = 'acc-' + docId;
+    if (document.getElementById(tId)) return;
+    const t = document.createElement('div');
+    t.className = 'challenge-toast';
+    t.id = tId;
+    t.innerHTML = `
+        <div class="ct-icon">✅</div>
+        <div class="ct-body">
+            <div class="ct-title">Match Ready!</div>
+            <div class="ct-sub"><strong>${hEsc(friendUsername)}</strong> accepted.</div>
+        </div>
+        <div class="ct-actions">
+            <button class="ct-btn ct-accept" onclick="joinAcceptedChallenge('${tId}', '${roomCode}')">Play</button>
+            <button class="ct-btn ct-decline" onclick="dismissToastId('${tId}')">Cancel</button>
+        </div>`;
+    document.body.appendChild(t);
+    setTimeout(() => t.classList.add('visible'), 50);
+    setTimeout(() => dismissToastId(tId), 30000);
+}
+
+function dismissToastId(tId) {
+    const t = document.getElementById(tId);
+    if (t) { t.classList.remove('visible'); setTimeout(() => t.remove(), 400); }
+}
+
+function joinAcceptedChallenge(tId, roomCode) {
+    dismissToastId(tId);
+    // ensure modals or panels are closed.
+    if (typeof closeFriendsPanel === 'function') closeFriendsPanel();
+    const popup = document.getElementById('ol-friends-popup');
+    if (popup) popup.classList.remove('open');
+    if (document.getElementById('user-profile-modal')) document.getElementById('user-profile-modal').style.display = 'none';
+
+    openOnlineMenu();
+    setOlStatus('Connecting to match...', 'success');
+    document.getElementById('ol-name').value = currentProfile?.username || 'Player';
+    document.getElementById('ol-room').value = roomCode;
+    setTimeout(() => {
+        joinRoom();
+    }, 500);
 }
 
 function startChallengeListener() {
@@ -724,4 +829,182 @@ function showMsg(msg) {
     document.body.appendChild(t);
     setTimeout(() => t.classList.add('visible'), 50);
     setTimeout(() => { t.classList.remove('visible'); setTimeout(() => t.remove(), 400); }, 3000);
+}
+
+function getEloRank(elo) {
+    if (elo <= 250) return "Beginner";
+    if (elo <= 400) return "Good";
+    if (elo <= 600) return "Average";
+    if (elo <= 1000) return "Amazing";
+    if (elo <= 1500) return "Professional";
+    if (elo <= 2200) return "Master";
+    if (elo <= 3000) return "Demon";
+    return "GrandMaster";
+}
+
+function calculateElo(myElo, oppElo, outcome, accuracy = 50) {
+    const K = 32;
+    const expected = 1 / (1 + Math.pow(10, (oppElo - myElo) / 400));
+    const score = outcome === 'win' ? 1 : outcome === 'loss' ? 0 : 0.5;
+
+    // Base Elo change
+    let change = K * (score - expected);
+
+    // Performance modifier based on accuracy (0 to 100)
+    // 50 accuracy is neutral. Above 50 means fewer blunders, granting bonus points.
+    // Scale modifier to be max +/- 5 Elo points
+    let perfModifier = (accuracy - 50) / 10;
+
+    if (outcome === 'draw' && accuracy >= 80) {
+        // Significantly reward high accuracy draws
+        perfModifier += 3;
+    }
+
+    let newElo = Math.round(myElo + change + perfModifier);
+    return Math.max(100, Math.min(3500, newElo));
+}
+
+function recordGameResult(outcome, oppElo = 225, accuracy = 50) {
+    if (!currentUser) return null;
+    const field = outcome === 'win' ? 'wins' : outcome === 'loss' ? 'losses' : 'draws';
+
+    const myElo = currentProfile && currentProfile.elo ? currentProfile.elo : 225;
+    const newElo = calculateElo(myElo, oppElo, outcome, accuracy);
+    const eloChange = newElo - myElo;
+    if (currentProfile) currentProfile.elo = newElo;
+
+    db.collection('users').doc(currentUser.uid).update({
+        [field]: firebase.firestore.FieldValue.increment(1),
+        gamesPlayed: firebase.firestore.FieldValue.increment(1),
+        elo: newElo
+    }).catch(() => { });
+
+    return { newElo, eloChange };
+}
+
+async function loadStats() {
+    const el = document.getElementById('fp-stats');
+    if (!el || !currentUser) return;
+    try {
+        const snap = await db.collection('users').doc(currentUser.uid).get();
+        const d = snap.data() || {};
+        const w = d.wins || 0, l = d.losses || 0, dr = d.draws || 0;
+        const elo = d.elo || 225;
+        el.innerHTML = '<span style="color:#e08c32;margin-right:6px" title="' + getEloRank(elo) + '">Elo ' + elo + '</span> <span class="stat-w">' + w + 'W</span> <span class="stat-l">' + l + 'L</span> <span class="stat-d">' + dr + 'D</span>';
+    } catch (e) { el.innerHTML = ''; }
+}
+
+async function showUserProfile(uid) {
+    if (!uid) return;
+
+    // Prevent closing the modal immediately if it's opened via a click event
+    if (window.event && window.event.stopPropagation) {
+        window.event.stopPropagation();
+    }
+
+    const userDoc = await db.collection('users').doc(uid).get();
+    if (!userDoc.exists) return;
+
+    const d = userDoc.data();
+    const uname = d.username;
+    const elo = d.elo || 225;
+    const w = d.wins || 0, l = d.losses || 0, dr = d.draws || 0;
+    const bio = d.bio || "No bio set yet.";
+
+    // Check friend status
+    let actionHtml = '';
+    if (currentUser && uid !== currentUser.uid) {
+        const fid = [currentUser.uid, uid].sort().join('_');
+        const fDoc = await db.collection('friends').doc(fid).get();
+        if (fDoc.exists) {
+            const st = fDoc.data().status;
+            if (st === 'accepted') actionHtml = '<button class="fp-btn fp-challenge" onclick="challengeFriend(\'' + uid + '\',\'' + aEsc(uname) + '\')">⚔ Play</button>';
+            else if (fDoc.data().requester === currentUser.uid) actionHtml = '<span class="fp-pill pending">Sent</span>';
+            else actionHtml = '<button class="fp-btn fp-accept" onclick="acceptFriendReq(\'' + fDoc.id + '\')">✓ Accept</button>';
+        } else {
+            actionHtml = '<button class="fp-btn fp-add" onclick="sendFriendRequest(\'' + uid + '\',\'' + aEsc(uname) + '\')">+ Add Friend</button>';
+        }
+    }
+
+    let bioHtml = `
+        <div style="background:var(--bg-dark);padding:10px;border-radius:8px;margin-bottom:15px;text-align:left;">
+            <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:5px;display:flex;justify-content:space-between;">
+                <span>Bio</span>
+                ${(currentUser && uid === currentUser.uid) ? `<span style="color:#6a5acd;cursor:pointer;" onclick="editProfileBio()">Edit</span>` : ''}
+            </div>
+            <div id="user-profile-bio-text" style="font-size:0.9rem;white-space:pre-wrap;">${hEsc(bio)}</div>
+            ${(currentUser && uid === currentUser.uid) ? `
+                <div id="user-profile-bio-edit" style="display:none;margin-top:5px;">
+                    <textarea id="user-profile-bio-input" maxlength="150" style="width:100%;background:var(--bg-darker);color:#fff;border:1px solid #444;border-radius:4px;padding:5px;resize:vertical;min-height:60px;">${hEsc(bio)}</textarea>
+                    <div style="text-align:right;margin-top:5px;">
+                        <button onclick="saveProfileBio('${uid}')" style="background:#6a5acd;color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;">Save</button>
+                    </div>
+                </div>
+            ` : ''}
+        </div>
+    `;
+
+    const avatarHtml = d.avatar ?
+        '<div class="fp-avatar fp-avatar-lg" style="background-image:url(' + d.avatar + ');background-size:cover;background-position:center;background-color:transparent;color:transparent;margin:0 auto 10px auto;">' + uname[0].toUpperCase() + '</div>' :
+        '<div class="fp-avatar fp-avatar-lg" style="margin:0 auto 10px auto;">' + uname[0].toUpperCase() + '</div>';
+
+    let elHtml = document.getElementById('user-profile-modal');
+    if (!elHtml) {
+        elHtml = document.createElement('div');
+        elHtml.id = 'user-profile-modal';
+        elHtml.style.position = 'fixed';
+        elHtml.style.top = '0'; elHtml.style.left = '0'; elHtml.style.right = '0'; elHtml.style.bottom = '0';
+        elHtml.style.backgroundColor = 'rgba(0,0,0,0.8)';
+        elHtml.style.display = 'flex'; elHtml.style.alignItems = 'center'; elHtml.style.justifyContent = 'center';
+        elHtml.style.zIndex = '9999';
+        elHtml.onclick = function (e) { if (e.target === elHtml) elHtml.style.display = 'none'; };
+        document.body.appendChild(elHtml);
+    }
+
+    elHtml.innerHTML = `
+        <div style="background:var(--bg-card);padding:20px;border-radius:12px;width:90%;max-width:320px;text-align:center;box-shadow:var(--shadow);">
+            ${avatarHtml}
+            <h2 style="margin:0 0 5px 0;font-size:1.4rem;">${hEsc(uname)}</h2>
+            <div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:15px;">
+                <span style="color:#e08c32;font-weight:bold;margin-right:10px;">${getEloRank(elo)} (Elo ${elo})</span>
+                <span style="color:#4caf50;">${w}W</span> &middot; 
+                <span style="color:#f44336;">${l}L</span> &middot; 
+                <span style="color:#ffb300;">${dr}D</span>
+            </div>
+            
+            ${bioHtml}
+            
+            ${actionHtml ? `<div style="margin-bottom:15px;">${actionHtml}</div>` : ''}
+            
+            <div style="text-align:left;background:var(--bg-dark);padding:10px;border-radius:8px;">
+                <h4 style="margin:0 0 10px 0;font-size:0.9rem;color:var(--text-muted);">Recent Games (Coming Soon)</h4>
+                <div style="font-size:0.85rem;color:#888;">No recent online matches found.</div>
+            </div>
+            
+            <button class="fp-close-btn" style="position:absolute;top:10px;right:10px;background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;" onclick="document.getElementById('user-profile-modal').style.display='none'">✕</button>
+        </div>
+    `;
+
+    // We need to make sure the modal is displayed and position is relative so the close btn works
+    elHtml.children[0].style.position = 'relative';
+    elHtml.style.display = 'flex';
+}
+
+function editProfileBio() {
+    document.getElementById('user-profile-bio-text').style.display = 'none';
+    document.getElementById('user-profile-bio-edit').style.display = 'block';
+}
+
+async function saveProfileBio(uid) {
+    if (!currentUser || currentUser.uid !== uid) return;
+    const txt = document.getElementById('user-profile-bio-input').value.trim();
+    try {
+        await db.collection('users').doc(uid).update({ bio: txt });
+        document.getElementById('user-profile-bio-text').innerHTML = hEsc(txt || "No bio set yet.");
+        document.getElementById('user-profile-bio-text').style.display = 'block';
+        document.getElementById('user-profile-bio-edit').style.display = 'none';
+        showMsg('Bio updated!');
+    } catch (e) {
+        showMsg('Failed to update bio.');
+    }
 }

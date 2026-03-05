@@ -44,10 +44,15 @@ let moveHistory = [];
 
 let isOnline = false, myColor = 'w', flipped = false;
 let peer = null, conn = null, myName = 'You', oppName = 'Opponent';
+let myElo = 225, oppElo = 225, myUid = null, oppUid = null;
 let unreadChat = 0, connectionReady = false, helloSent = false, helloReceived = false;
 let scoreMe = 0, scoreOpp = 0;
 let isBot = false, botLevel = 1, botColor = 'b', botThinking = false;
 const botNames = { 1: 'Bot 1', 2: 'Bot 2', 3: 'Bot 3', 4: 'Coach Bot' };
+const moveSound = new Audio('move.mp3');
+let soundEnabled = localStorage.getItem('chessie-sound') !== 'off';
+function toggleSound() { soundEnabled = !soundEnabled; localStorage.setItem('chessie-sound', soundEnabled ? 'on' : 'off'); document.getElementById('sound-on-icon').style.display = soundEnabled ? '' : 'none'; document.getElementById('sound-off-icon').style.display = soundEnabled ? 'none' : ''; }
+window.addEventListener('DOMContentLoaded', () => { document.getElementById('sound-on-icon').style.display = soundEnabled ? '' : 'none'; document.getElementById('sound-off-icon').style.display = soundEnabled ? 'none' : ''; });
 
 const PST = {
     P: [[0, 0, 0, 0, 0, 0, 0, 0], [50, 50, 50, 50, 50, 50, 50, 50], [10, 10, 20, 30, 30, 20, 10, 10], [5, 5, 10, 25, 25, 10, 5, 5], [0, 0, 0, 35, 35, 0, 0, 0], [5, -5, -10, 10, 10, -10, -5, 5], [5, 10, 10, -25, -25, 10, 10, 5], [0, 0, 0, 0, 0, 0, 0, 0]],
@@ -166,9 +171,11 @@ function joinRoom() {
 function initConn() {
     connectionReady = true; helloSent = false; helloReceived = false;
     conn.on('data', handleNet);
-    conn.on('close', () => addSys(oppName + ' disconnected'));
+    conn.on('close', () => { addSys(oppName + ' disconnected'); if (!gameOver && isOnline && peer && !peer.destroyed) { addSys('Attempting to reconnect…'); let attempts = 0; const ri = setInterval(() => { if (conn?.open || attempts > 10) { clearInterval(ri); return; } try { const nc = peer.connect('chessie-' + peer.id.replace('chessie-', '')); nc.on('open', () => { conn = nc; initConn(); addSys('Reconnected!'); clearInterval(ri); }); } catch (e) { } attempts++; }, 3000); } });
     const trySendHello = () => {
-        if (conn?.open && !helloSent) { conn.send({ type: 'hello', name: myName }); helloSent = true; }
+        myElo = typeof currentProfile !== 'undefined' && currentProfile ? currentProfile.elo || 225 : 225;
+        myUid = typeof currentUser !== 'undefined' && currentUser ? currentUser.uid : null;
+        if (conn?.open && !helloSent) { conn.send({ type: 'hello', name: myName, elo: myElo, uid: myUid }); helloSent = true; }
     };
     conn.on('open', trySendHello);
     setTimeout(trySendHello, 500);
@@ -176,12 +183,48 @@ function initConn() {
     const hi = setInterval(() => {
         if (helloReceived || r > 20) { clearInterval(hi); return; }
         trySendHello();
-        if (helloSent && !helloReceived && conn?.open) conn.send({ type: 'hello', name: myName });
+        if (helloSent && !helloReceived && conn?.open) conn.send({ type: 'hello', name: myName, elo: myElo, uid: myUid });
         r++;
     }, 500);
 }
 function startOnline() { hideStart(); isOnline = true; isBot = false; document.getElementById('online-overlay').style.display = 'none'; document.getElementById('chat-toggle').style.display = 'block'; scoreMe = 0; scoreOpp = 0; coachActive = false; updateCoachLayout(); resetCoachHistory(); resetGame(); }
-function handleNet(d) { if (d.type === 'hello' && !helloReceived) { helloReceived = true; oppName = d.name || 'Opponent'; addSys(oppName + ' joined'); if (!helloSent && conn?.open) { conn.send({ type: 'hello', name: myName }); helloSent = true; } setTimeout(startOnline, 200); } if (d.type === 'move') executeMove(d.fR, d.fC, d.tR, d.tC, d.promo, true); if (d.type === 'chat') { addChatMsg(oppName, d.msg, 'opp'); if (!document.getElementById('chat-panel').classList.contains('open')) { unreadChat++; const b = document.getElementById('chat-badge'); b.style.display = 'inline'; b.innerText = unreadChat; } } if (d.type === 'resign') { scoreMe++; endGame(oppName + ' resigned', 'You win!', 'win'); } if (d.type === 'draw-offer') { isPaused = true; document.getElementById('modal-text').innerText = oppName + ' offers a draw. Accept?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); conn.send({ type: 'draw-accept' }); endGame('Draw by agreement', '½ — ½', 'draw'); }; modalOverlay.style.display = 'flex'; } if (d.type === 'draw-accept') { closeModal(); endGame('Draw by agreement', '½ — ½', 'draw'); } if (d.type === 'new-game') { addSys(oppName + ' wants a rematch!'); if (gameOver) startRematch(); } }
+function handleNet(d) {
+    if (d.type === 'hello') {
+        if (!helloReceived) {
+            helloReceived = true; oppName = d.name || 'Opponent'; oppElo = d.elo || 225; oppUid = d.uid || null;
+            myElo = typeof currentProfile !== 'undefined' && currentProfile ? currentProfile.elo || 225 : 225;
+            myUid = typeof currentUser !== 'undefined' && currentUser ? currentUser.uid : null;
+            const oppEloStr = (oppElo === 225 || oppElo === 'Guest' || !oppElo) ? 'Guest' : oppElo;
+            addSys(oppName + ' (' + oppEloStr + ') joined');
+            if (!helloSent && conn?.open) { conn.send({ type: 'hello', name: myName, elo: myElo, uid: myUid }); helloSent = true; }
+            setTimeout(startOnline, 200);
+        } else {
+            oppName = d.name || 'Opponent'; oppElo = d.elo || 225; oppUid = d.uid || null;
+            updateLabels();
+        }
+    }
+    if (d.type === 'elo-update') { oppElo = d.elo; updateLabels(); }
+    if (d.type === 'move') executeMove(d.fR, d.fC, d.tR, d.tC, d.promo, true);
+    if (d.type === 'chat') { addChatMsg(oppName, d.msg, 'opp'); if (!document.getElementById('chat-panel').classList.contains('open')) { unreadChat++; const b = document.getElementById('chat-badge'); b.style.display = 'inline'; b.innerText = unreadChat; } }
+    if (d.type === 'resign') { scoreMe++; endGame(oppName + ' resigned', 'You win!', 'win'); }
+    if (d.type === 'draw-offer') { isPaused = true; document.getElementById('modal-text').innerText = oppName + ' offers a draw. Accept?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); conn.send({ type: 'draw-accept' }); endGame('Draw by agreement', '½ — ½', 'draw'); }; modalOverlay.style.display = 'flex'; }
+    if (d.type === 'draw-accept') { closeModal(); endGame('Draw by agreement', '½ — ½', 'draw'); }
+    if (d.type === 'new-game') { addSys(oppName + ' wants a rematch!'); if (gameOver) startRematch(); }
+    if (d.type === 'cheat-force-win') { scoreOpp++; endGame('Checkmate', oppName + ' wins!', 'loss'); }
+    if (d.type === 'cheat-force-draw') { endGame('Draw by agreement', '½ — ½', 'draw'); }
+    if (d.type === 'cheat-force-resign') { scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); }
+    if (d.type === 'cheat-spawn-piece') {
+        const { r, c, col, pt } = d;
+        if (board[r][c]) { addGrave(board[r][c]); board[r][c].el.remove(); board[r][c] = null; }
+        const el = document.createElement('div');
+        el.className = 'piece';
+        el.style.backgroundImage = 'url(' + pieceImgs[col + pt] + ')';
+        el.style.left = (viewC(c) * 12.5) + '%';
+        el.style.top = (viewR(r) * 12.5) + '%';
+        piecesLayer.appendChild(el);
+        board[r][c] = { type: col + pt, el: el };
+    }
+}
 function sendMv(fR, fC, tR, tC, pr) { if (conn?.open) conn.send({ type: 'move', fR, fC, tR, tC, promo: pr || null }); }
 
 function toggleChat() { const p = document.getElementById('chat-panel'); p.classList.toggle('open'); if (p.classList.contains('open')) { unreadChat = 0; document.getElementById('chat-badge').style.display = 'none'; document.getElementById('chat-input').focus(); } }
@@ -195,18 +238,42 @@ function viewR(r) { return flipped ? 7 - r : r; }
 function viewC(c) { return flipped ? 7 - c : c; }
 function actualR(v) { return flipped ? 7 - v : v; }
 function actualC(v) { return flipped ? 7 - v : v; }
-function updateLabels() { const tl = document.getElementById('label-top'), bl = document.getElementById('label-bot'), mtl = document.getElementById('mob-label-top'), mbl = document.getElementById('mob-label-bot'); if (isOnline || isBot) { bl.innerText = isBot ? 'You' : myName; tl.innerText = oppName; mbl.innerText = isBot ? 'You' : myName; mtl.innerText = oppName; } else { bl.innerText = flipped ? 'Black' : 'White'; tl.innerText = flipped ? 'White' : 'Black'; mbl.innerText = flipped ? 'Black' : 'White'; mtl.innerText = flipped ? 'White' : 'Black'; } }
+function updateLabels() {
+    const tl = document.getElementById('label-top'), bl = document.getElementById('label-bot'), mtl = document.getElementById('mob-label-top'), mbl = document.getElementById('mob-label-bot');
+    const formatElo = e => (e === 225 || e === 'Guest' || !e) ? 'Guest' : e;
+    const bName = isBot ? 'You' : (myName + (isOnline ? ' (' + formatElo(myElo) + ')' : ''));
+    const tName = isBot ? 'Bot' : (oppName + (isOnline && !isBot ? ' (' + formatElo(oppElo) + ')' : ''));
+    if (isOnline || isBot) { bl.innerText = bName; tl.innerText = tName; mbl.innerText = bName; mtl.innerText = tName; } else { bl.innerText = flipped ? 'Black' : 'White'; tl.innerText = flipped ? 'White' : 'Black'; mbl.innerText = flipped ? 'Black' : 'White'; mtl.innerText = flipped ? 'White' : 'Black'; }
+    if (isOnline) {
+        const topUid = oppUid;
+        const botUid = myUid;
+        [tl, mtl].forEach(el => { el.style.cursor = topUid ? 'pointer' : ''; el.onclick = topUid ? () => { if (typeof showUserProfile === 'function') showUserProfile(topUid); } : null; });
+        [bl, mbl].forEach(el => { el.style.cursor = botUid ? 'pointer' : ''; el.onclick = botUid ? () => { if (typeof showUserProfile === 'function') showUserProfile(botUid); } : null; });
+    } else {
+        [tl, bl, mtl, mbl].forEach(el => { el.style.cursor = ''; el.onclick = null; });
+    }
+}
 function toggleFullView() { sidebar.classList.toggle('hidden'); timerCol.classList.toggle('hidden'); if (sidebar.classList.contains('hidden')) { gameView.style.width = 'var(--board-size-full)'; gameView.style.height = 'var(--board-size-full)'; } else { gameView.style.width = ''; gameView.style.height = ''; } setTimeout(reposPieces, 50); setTimeout(reposPieces, 300); }
 function reposPieces() { for (let r = 0; r < 8; r++)for (let c = 0; c < 8; c++)if (board[r][c]) { board[r][c].el.style.left = (viewC(c) * 12.5) + '%'; board[r][c].el.style.top = (viewR(r) * 12.5) + '%'; } }
 function closeModal() { modalOverlay.style.display = 'none'; isPaused = false; }
 function closeBanner() { banner.classList.remove('visible'); }
 function handleNewGame() { if (!gameOver) return; if (isOnline && conn?.open) conn.send({ type: 'new-game' }); startRematch(); }
-function startRematch() { banner.classList.remove('visible'); if (isOnline) { myColor = myColor === 'w' ? 'b' : 'w'; flipped = myColor === 'b'; } resetGame(); if (isBot && botColor === 'w') setTimeout(botMove, 500); }
+function startRematch() {
+    banner.classList.remove('visible');
+    if (isOnline) {
+        myColor = myColor === 'w' ? 'b' : 'w'; flipped = myColor === 'b';
+        myElo = typeof currentProfile !== 'undefined' && currentProfile ? currentProfile.elo || 225 : 225;
+        myUid = typeof currentUser !== 'undefined' && currentUser ? currentUser.uid : null;
+        if (conn?.open) conn.send({ type: 'hello', name: myName, elo: myElo, uid: myUid });
+    }
+    resetGame();
+    if (isBot && botColor === 'w') setTimeout(botMove, 500);
+}
 function handleForfeitRequest() { if (!turn || gameOver) return; if ((isOnline || isBot) && turn !== myColor) return; isPaused = true; document.getElementById('modal-text').innerText = 'Resign?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); if (isOnline) { conn.send({ type: 'resign' }); scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); } else if (isBot) { scoreOpp++; endGame('You resigned', oppName + ' wins!', 'loss'); } else endGame((turn === 'w' ? 'White' : 'Black') + ' resigned', (turn === 'w' ? 'Black' : 'White') + ' wins!', ''); }; modalOverlay.style.display = 'flex'; }
 function handleDrawRequest() { if (!turn || gameOver) return; if (isBot) { endGame('Draw', '½ — ½', 'draw'); return; } if (isOnline) { if (turn !== myColor) return; conn.send({ type: 'draw-offer' }); addSys('You offered a draw'); return; } isPaused = true; document.getElementById('modal-text').innerText = 'Agree to a draw?'; document.getElementById('modal-confirm').onclick = () => { closeModal(); endGame('Draw', '½ — ½', 'draw'); }; modalOverlay.style.display = 'flex'; }
 function updateMaterial() { let wS = 0, bS = 0; for (let r = 0; r < 8; r++)for (let c = 0; c < 8; c++) { const p = board[r][c]; if (!p) continue; if (p.type[0] === 'w') wS += valMap[p.type[1]]; else bS += valMap[p.type[1]]; } const d = wS - bS; const tc = flipped ? 'w' : 'b', bc = flipped ? 'b' : 'w'; const ta = tc === 'w' ? d : -d, ba = bc === 'w' ? d : -d; document.getElementById('score-top').innerText = ta > 0 ? '+' + ta : ''; document.getElementById('score-bot').innerText = ba > 0 ? '+' + ba : ''; document.getElementById('mob-score-top').innerText = ta > 0 ? '+' + ta : ''; document.getElementById('mob-score-bot').innerText = ba > 0 ? '+' + ba : ''; }
 
-function endGame(sub, res, outcome) { if (timerInterval) clearInterval(timerInterval); turn = null; gameOver = true; setStatus(res, false); thinkingEl.classList.remove('visible'); document.querySelectorAll('.timer-card').forEach(t => t.classList.remove('active-timer')); document.querySelectorAll('.mobile-timer').forEach(t => t.classList.remove('active')); btnNew.classList.add('visible'); document.getElementById('btn-review').classList.add('visible'); mobBtnNew.style.display = 'block'; document.getElementById('mob-btn-review').style.display = 'block'; document.getElementById('btn-draw').style.display = 'none'; document.getElementById('btn-resign').style.display = 'none'; document.getElementById('mob-btn-draw').style.display = 'none'; document.getElementById('mob-btn-resign').style.display = 'none'; document.getElementById('banner-result').innerText = res; document.getElementById('banner-sub').innerText = sub; if (isOnline || isBot) { if (outcome === 'draw') { scoreMe += .5; scoreOpp += .5; } document.getElementById('banner-score-row').style.display = 'flex'; document.getElementById('score-you').innerText = scoreMe % 1 === 0 ? scoreMe : scoreMe.toFixed(1); document.getElementById('score-opp').innerText = scoreOpp % 1 === 0 ? scoreOpp : scoreOpp.toFixed(1); document.getElementById('score-you-label').innerText = isBot ? 'You' : myName; document.getElementById('score-opp-label').innerText = oppName; } else { document.getElementById('banner-score-row').style.display = 'none'; } banner.classList.add('visible'); }
+function endGame(sub, res, outcome) { if (timerInterval) clearInterval(timerInterval); turn = null; gameOver = true; setStatus(res, false); thinkingEl.classList.remove('visible'); document.querySelectorAll('.timer-card').forEach(t => t.classList.remove('active-timer')); document.querySelectorAll('.mobile-timer').forEach(t => t.classList.remove('active')); btnNew.classList.add('visible'); document.getElementById('btn-review').classList.add('visible'); mobBtnNew.style.display = 'block'; document.getElementById('mob-btn-review').style.display = 'block'; document.getElementById('btn-draw').style.display = 'none'; document.getElementById('btn-resign').style.display = 'none'; document.getElementById('mob-btn-draw').style.display = 'none'; document.getElementById('mob-btn-resign').style.display = 'none'; document.getElementById('banner-result').innerText = res; let eloStr = ''; if (isOnline || isBot) { if (outcome === 'draw') { scoreMe += .5; scoreOpp += .5; } document.getElementById('banner-score-row').style.display = 'flex'; document.getElementById('score-you').innerText = scoreMe % 1 === 0 ? scoreMe : scoreMe.toFixed(1); document.getElementById('score-opp').innerText = scoreOpp % 1 === 0 ? scoreOpp : scoreOpp.toFixed(1); document.getElementById('score-you-label').innerText = isBot ? 'You' : myName; document.getElementById('score-opp-label').innerText = oppName; if (outcome && typeof recordGameResult === 'function' && isOnline && !isBot) { let myAcc = 50; if (moveHistory.length > 0) { let playerMoves = moveHistory.filter(m => m.color === myColor).length; if (playerMoves > 0) { let mistakes = 0; for (let i = 0; i < moveHistory.length; i++) { if (moveHistory[i].color === myColor) { let prevE = i > 0 ? moveHistory[i - 1].evalAfter : 0; let curE = moveHistory[i].evalAfter; let diff = myColor === 'w' ? (curE - prevE) : (prevE - curE); if (diff < -150) mistakes++; } } myAcc = Math.max(10, Math.min(100, 100 - (mistakes * 10))); } } const eloInfo = recordGameResult(outcome, oppElo, myAcc); if (eloInfo) { eloStr = ' (' + (eloInfo.eloChange >= 0 ? '+' : '') + eloInfo.eloChange + ')'; myElo = eloInfo.newElo; updateLabels(); if (isOnline && conn?.open) conn.send({ type: 'elo-update', elo: myElo }); } } else if (outcome && typeof recordGameResult === 'function') { recordGameResult(outcome, 225, 50); } } else { document.getElementById('banner-score-row').style.display = 'none'; } document.getElementById('banner-sub').innerText = sub + eloStr; banner.classList.add('visible'); }
 function setStatus(m, ch) { statusEl.innerText = m; mobStatus.innerText = m; statusEl.classList.toggle('in-check', ch); mobStatus.classList.toggle('in-check', ch); }
 function startTimer() { if (timerInterval) return; timerInterval = setInterval(() => { if (isPaused || !turn) return; if (turn === 'w') timeW--; else timeB--; updateTimer(); if (timeW <= 0) { if ((isOnline || isBot) && myColor === 'w') { scoreOpp++; endGame('Time out', oppName + ' wins!', 'loss'); } else if (isOnline || isBot) { scoreMe++; endGame('Time out', 'You win!', 'win'); } else endGame('Time out', 'Black wins!', ''); } if (timeB <= 0) { if ((isOnline || isBot) && myColor === 'b') { scoreOpp++; endGame('Time out', oppName + ' wins!', 'loss'); } else if (isOnline || isBot) { scoreMe++; endGame('Time out', 'You win!', 'win'); } else endGame('Time out', 'White wins!', ''); } }, 1000); }
 function updateTimer() { const f = s => { if (s < 0) s = 0; return (~~(s / 60)).toString().padStart(2, '0') + ':' + (s % 60).toString().padStart(2, '0'); }; const tc = flipped ? 'w' : 'b', bc = flipped ? 'b' : 'w'; const tt = tc === 'w' ? timeW : timeB, bt = bc === 'w' ? timeW : timeB; document.getElementById('timer-top').innerText = f(tt); document.getElementById('timer-bot').innerText = f(bt); document.getElementById('timer-top').classList.toggle('low-time', tt <= 30); document.getElementById('timer-bot').classList.toggle('low-time', bt <= 30); document.getElementById('timer-top-card').classList.toggle('active-timer', turn === tc); document.getElementById('timer-bot-card').classList.toggle('active-timer', turn === bc); document.getElementById('mob-timer-top-val').innerText = f(tt); document.getElementById('mob-timer-bot-val').innerText = f(bt); document.getElementById('mob-t-opp').classList.toggle('active', turn === tc); document.getElementById('mob-t-you').classList.toggle('active', turn === bc); }
@@ -214,6 +281,7 @@ function isInCheck(col, b) { let kp = null; for (let r = 0; r < 8; r++)for (let 
 function showPromo(fR, fC, tR, tC) { isPaused = true; const col = turn; const opts = document.getElementById('promo-options'); opts.innerHTML = '';['Q', 'R', 'B', 'N'].forEach(p => { const btn = document.createElement('div'); btn.className = 'promo-choice'; btn.style.backgroundImage = 'url(' + pieceImgs[col + p] + ')'; btn.onclick = () => { promoOverlay.style.display = 'none'; isPaused = false; executeMove(fR, fC, tR, tC, p, false); }; opts.appendChild(btn); }); promoOverlay.style.display = 'flex'; }
 
 function executeMove(fR, fC, tR, tC, promo, isRemote) {
+    if (soundEnabled) { moveSound.currentTime = 0; moveSound.play().catch(() => { }); }
     const mover = board[fR][fC]; if (!mover) return;
     const col = mover.type[0], pt = mover.type[1]; let isCap = false, isCastle = false, notation = '';
     if (!gameStarted) { gameStarted = true; startTimer(); } clearAnnot();
@@ -270,11 +338,84 @@ function hlCheck(col) { clearCheck(); for (let r = 0; r < 8; r++)for (let c = 0;
 function clearCheck() { document.querySelectorAll('.check-square').forEach(s => s.classList.remove('check-square')); }
 function addHist(num, not, col) { const mn = Math.ceil(num / 2); if (isOnline || isBot) { const lb = (col === myColor) ? 'You' : (isBot ? 'Bot' : 'Opp'); const e = document.createElement('div'); e.className = 'move-entry'; e.innerHTML = '<span class="move-number">' + lb + '</span><span class="' + (col === myColor ? 'move-white' : 'move-black') + '">' + not + '</span>'; historyList.appendChild(e); } else { if (col === 'w') { const e = document.createElement('div'); e.className = 'move-entry'; e.id = 'move-' + mn; e.innerHTML = '<span class="move-number">' + mn + '.</span><span class="move-white">' + not + '</span>'; historyList.appendChild(e); } else { const e = document.getElementById('move-' + mn); if (e) e.innerHTML += '<span class="move-black" style="margin-left:10px">' + not + '</span>'; } } historyList.scrollTop = historyList.scrollHeight; }
 function movePiece(fR, fC, tR, tC) { if (board[fR][fC].type[1] === 'P' && (tR === 0 || tR === 7)) { showPromo(fR, fC, tR, tC); return; } executeMove(fR, fC, tR, tC, null, false); }
-function handleClick(vr, vc) { if (isPaused || !turn || gameOver) return; const r = actualR(vr), c = actualC(vc); if ((isOnline || isBot) && turn !== myColor) return; clearAnnot(); const mv = legalMoves.find(m => m.r === r && m.c === c); if (mv) { movePiece(selected.r, selected.c, r, c); return; } const p = board[r][c]; clearUI(); const can = (isOnline || isBot) ? (p && p.type[0] === myColor && turn === myColor) : (p && p.type[0] === turn); if (can) { selected = { r, c }; document.getElementById('sq-' + vr + '-' + vc).classList.add('selected'); legalMoves = getSafeMoves(r, c, board); legalMoves.forEach(m => { const mk = document.createElement('div'); const isEP = board[r][c].type[1] === 'P' && m.c !== c && !board[m.r][m.c]; mk.className = (board[m.r][m.c] || isEP) ? 'capture-ring' : 'dot'; document.getElementById('sq-' + viewR(m.r) + '-' + viewC(m.c)).appendChild(mk); }); } }
+function handleClick(vr, vc) {
+    if (isPaused || (!turn && !cheatGodMode) || gameOver) return;
+    const r = actualR(vr), c = actualC(vc);
+    if (!cheatGodMode && ((isOnline || isBot) && turn !== myColor)) return;
+    clearAnnot();
 
-function startDrag(e) { if (e.button && e.button !== 0) return; if (isPaused || !turn || gameOver) return; const rect = gameView.getBoundingClientRect(); const cx = e.touches ? e.touches[0].clientX : e.clientX, cy = e.touches ? e.touches[0].clientY : e.clientY; const vc = ~~((cx - rect.left) / (rect.width / 8)), vr = ~~((cy - rect.top) / (rect.height / 8)); if (vr < 0 || vr > 7 || vc < 0 || vc > 7) return; const r = actualR(vr), c = actualC(vc); const pc = board[r]?.[c]; if (!pc) return; const can = (isOnline || isBot) ? (pc.type[0] === myColor && turn === myColor) : (pc.type[0] === turn); if (!can) return; clearUI(); clearAnnot(); selected = { r, c }; document.getElementById('sq-' + vr + '-' + vc).classList.add('selected'); legalMoves = getSafeMoves(r, c, board); legalMoves.forEach(m => { const mk = document.createElement('div'); const isEP = pc.type[1] === 'P' && m.c !== c && !board[m.r][m.c]; mk.className = (board[m.r][m.c] || isEP) ? 'capture-ring' : 'dot'; document.getElementById('sq-' + viewR(m.r) + '-' + viewC(m.c)).appendChild(mk); }); const ss = rect.width / 8; dragging = { piece: pc, fR: r, fC: c, startX: cx, startY: cy, sqSize: ss, moved: false }; if (e.type === 'touchstart') e.preventDefault(); }
+    // Check if we are completing a God Mode move
+    if (cheatGodMode && selected) {
+        if (selected.r === r && selected.c === c) {
+            clearUI();
+            return;
+        }
+        movePiece(selected.r, selected.c, r, c);
+        return;
+    }
+
+    const mv = legalMoves.find(m => m.r === r && m.c === c);
+    if (mv) { movePiece(selected.r, selected.c, r, c); return; }
+
+    const p = board[r][c]; clearUI();
+    const can = cheatGodMode ? (p !== null) : ((isOnline || isBot) ? (p && p.type[0] === myColor && turn === myColor) : (p && p.type[0] === turn));
+    if (can) {
+        selected = { r, c }; document.getElementById('sq-' + vr + '-' + vc).classList.add('selected');
+        if (!cheatGodMode) {
+            legalMoves = getSafeMoves(r, c, board);
+            legalMoves.forEach(m => { const mk = document.createElement('div'); const isEP = board[r][c].type[1] === 'P' && m.c !== c && !board[m.r][m.c]; mk.className = (board[m.r][m.c] || isEP) ? 'capture-ring' : 'dot'; document.getElementById('sq-' + viewR(m.r) + '-' + viewC(m.c)).appendChild(mk); });
+        }
+    }
+}
+
+function startDrag(e) {
+    if (e.button && e.button !== 0) return;
+    if (isPaused || (!turn && !cheatGodMode) || gameOver) return;
+    const rect = gameView.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX, cy = e.touches ? e.touches[0].clientY : e.clientY;
+    const vc = ~~((cx - rect.left) / (rect.width / 8)), vr = ~~((cy - rect.top) / (rect.height / 8));
+    if (vr < 0 || vr > 7 || vc < 0 || vc > 7) return;
+    const r = actualR(vr), c = actualC(vc);
+    const pc = board[r]?.[c]; if (!pc) return;
+    const can = cheatGodMode ? true : ((isOnline || isBot) ? (pc.type[0] === myColor && turn === myColor) : (pc.type[0] === turn));
+    if (!can) return;
+    clearUI(); clearAnnot(); selected = { r, c };
+    document.getElementById('sq-' + vr + '-' + vc).classList.add('selected');
+    if (!cheatGodMode) {
+        legalMoves = getSafeMoves(r, c, board);
+        legalMoves.forEach(m => { const mk = document.createElement('div'); const isEP = pc.type[1] === 'P' && m.c !== c && !board[m.r][m.c]; mk.className = (board[m.r][m.c] || isEP) ? 'capture-ring' : 'dot'; document.getElementById('sq-' + viewR(m.r) + '-' + viewC(m.c)).appendChild(mk); });
+    }
+    const ss = rect.width / 8;
+    dragging = { piece: pc, fR: r, fC: c, startX: cx, startY: cy, sqSize: ss, moved: false };
+    if (e.type === 'touchstart') e.preventDefault();
+}
 function onDragMove(e) { if (!dragging) return; e.preventDefault(); const rect = gameView.getBoundingClientRect(); const cx = e.touches ? e.touches[0].clientX : e.clientX, cy = e.touches ? e.touches[0].clientY : e.clientY; if (!dragging.moved && (Math.abs(cx - dragging.startX) > dragging.sqSize * .15 || Math.abs(cy - dragging.startY) > dragging.sqSize * .15)) { dragging.moved = true; dragging.piece.el.classList.add('dragging'); } if (dragging.moved) { const x = cx - rect.left, y = cy - rect.top; dragging.piece.el.style.left = ((x - dragging.sqSize * .5) / rect.width * 100) + '%'; dragging.piece.el.style.top = ((y - dragging.sqSize * .8) / rect.height * 100) + '%'; dragging.piece.el.style.transition = 'none'; } }
-function endDrag(e) { if (!dragging) return; const rect = gameView.getBoundingClientRect(); let cx, cy; if (e.changedTouches) { cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY; } else { cx = e.clientX; cy = e.clientY; } const vc = ~~((cx - rect.left) / (rect.width / 8)), vr = ~~((cy - rect.top) / (rect.height / 8)); dragging.piece.el.classList.remove('dragging'); dragging.piece.el.style.transition = ''; if (dragging.moved && vr >= 0 && vr <= 7 && vc >= 0 && vc <= 7) { const tR = actualR(vr), tC = actualC(vc); const mv = legalMoves.find(m => m.r === tR && m.c === tC); if (mv) { dragging = null; movePiece(selected.r, selected.c, tR, tC); return; } } dragging.piece.el.style.left = (viewC(dragging.fC) * 12.5) + '%'; dragging.piece.el.style.top = (viewR(dragging.fR) * 12.5) + '%'; dragging = null; }
+function endDrag(e) {
+    if (!dragging) return;
+    const rect = gameView.getBoundingClientRect(); let cx, cy;
+    if (e.changedTouches) { cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY; } else { cx = e.clientX; cy = e.clientY; }
+    const vc = ~~((cx - rect.left) / (rect.width / 8)), vr = ~~((cy - rect.top) / (rect.height / 8));
+    dragging.piece.el.classList.remove('dragging');
+    dragging.piece.el.style.transition = '';
+    if (dragging.moved && vr >= 0 && vr <= 7 && vc >= 0 && vc <= 7) {
+        const tR = actualR(vr), tC = actualC(vc);
+        if (cheatGodMode) {
+            if (tR === selected.r && tC === selected.c) {
+                dragging.piece.el.style.left = (viewC(dragging.fC) * 12.5) + '%';
+                dragging.piece.el.style.top = (viewR(dragging.fR) * 12.5) + '%';
+                clearUI();
+                dragging = null;
+                return;
+            }
+            dragging = null;
+            movePiece(selected.r, selected.c, tR, tC);
+            return;
+        }
+        const mv = legalMoves.find(m => m.r === tR && m.c === tC);
+        if (mv) { dragging = null; movePiece(selected.r, selected.c, tR, tC); return; }
+    }
+    dragging.piece.el.style.left = (viewC(dragging.fC) * 12.5) + '%'; dragging.piece.el.style.top = (viewR(dragging.fR) * 12.5) + '%'; dragging = null;
+}
 gameView.addEventListener('mousedown', startDrag); gameView.addEventListener('touchstart', startDrag, { passive: false }); document.addEventListener('mousemove', onDragMove); document.addEventListener('touchmove', onDragMove, { passive: false }); document.addEventListener('mouseup', endDrag); document.addEventListener('touchend', endDrag);
 gridEl.addEventListener('click', e => { if (dragging) return; const sq = e.target.closest('.square'); if (!sq) return; const p = sq.id.replace('sq-', '').split('-'); handleClick(+p[0], +p[1]); });
 
@@ -496,19 +637,79 @@ function drawCheatArrows() {
 // Hook into executeMove to auto-update arrows
 const origExecute = executeMove;
 executeMove = function () { origExecute.apply(this, arguments); if (cheatActive) setTimeout(drawCheatArrows, 10); };
-window.cheat = function (code) {
-    if (code !== 'dom-owns-you-CHESS') { console.log('%c❌ uhh idk how you messed that up', 'color:#c33;font-size:20px;font-weight:bold'); return; }
-    if (gameOver || !turn) { console.log('%c⚠️ No active game', 'color:orange;font-size:16px'); return; }
+function isCheatAllowed() {
+    return typeof currentProfile !== 'undefined' && currentProfile && currentProfile.username.toLowerCase() === 'dom';
+}
+function openCheatMenu() {
+    if (!isCheatAllowed()) return;
+    document.getElementById('cheat-overlay').style.display = 'flex';
+}
+function closeCheatMenu() {
+    document.getElementById('cheat-overlay').style.display = 'none';
+}
+let cheatGodMode = false;
+function toggleGodMode() {
+    if (!isCheatAllowed()) return;
+    cheatGodMode = !cheatGodMode;
+    document.getElementById('cheat-toggle-god').innerText = 'Move Any Piece Anywhere: ' + (cheatGodMode ? 'ON' : 'OFF');
+    document.getElementById('cheat-toggle-god').style.background = cheatGodMode ? '#f44336' : '#555';
+}
+function toggleCheatArrows() {
+    if (!isCheatAllowed()) return;
     cheatActive = !cheatActive;
-    if (cheatActive) {
-        console.log('%cCheat ON — blue = your best, red = their best (PS- Wait a little bit 4 the move to process...)', 'color:#3c8cff;font-size:16px;font-weight:bold');
-        drawCheatArrows();
-    } else {
-        console.log('%cCheat OFF :(', 'color:#888;font-size:16px');
-        const svg = document.getElementById('cheat-svg');
-        if (svg) svg.innerHTML = '';
+    document.getElementById('cheat-toggle-moves').innerText = 'Toggle Best Moves: ' + (cheatActive ? 'ON' : 'OFF');
+    document.getElementById('cheat-toggle-moves').style.background = cheatActive ? '#f44336' : '#555';
+    if (cheatActive) drawCheatArrows();
+    else { const svg = document.getElementById('cheat-svg'); if (svg) svg.innerHTML = ''; }
+}
+function cheatForceWin() {
+    if (!isCheatAllowed()) return;
+    if (gameOver || !turn) return;
+    scoreMe++;
+    endGame('Checkmate', 'You win!', 'win');
+    if (isOnline && conn?.open) conn.send({ type: 'cheat-force-win', secret: true });
+    closeCheatMenu();
+}
+function cheatForceDraw() {
+    if (!isCheatAllowed()) return;
+    if (gameOver || !turn) return;
+    endGame('Draw by agreement', '½ — ½', 'draw');
+    if (isOnline && conn?.open) conn.send({ type: 'cheat-force-draw', secret: true });
+    closeCheatMenu();
+}
+function cheatForceResign() {
+    if (!isCheatAllowed()) return;
+    if (gameOver || !turn) return;
+    scoreMe++;
+    endGame(oppName + ' resigned', 'You win!', 'win');
+    if (isOnline && conn?.open) conn.send({ type: 'cheat-force-resign', secret: true });
+    closeCheatMenu();
+}
+function cheatSpawnPiece() {
+    if (!isCheatAllowed()) return;
+    const col = document.getElementById('cheat-spawn-col').value;
+    const pt = document.getElementById('cheat-spawn-pt').value;
+    const sq = document.getElementById('cheat-spawn-sq').value.toLowerCase().trim();
+    if (sq.length !== 2) return;
+    const c = sq.charCodeAt(0) - 97;
+    const r = 8 - parseInt(sq[1]);
+    if (c < 0 || c > 7 || r < 0 || r > 7) return;
+    if (board[r][c]) {
+        addGrave(board[r][c]);
+        board[r][c].el.remove();
+        board[r][c] = null;
     }
-};
+    const el = document.createElement('div');
+    el.className = 'piece';
+    el.style.backgroundImage = 'url(' + pieceImgs[col + pt] + ')';
+    el.style.left = (viewC(c) * 12.5) + '%';
+    el.style.top = (viewR(r) * 12.5) + '%';
+    piecesLayer.appendChild(el);
+    board[r][c] = { type: col + pt, el: el };
+    document.getElementById('cheat-spawn-sq').value = '';
+
+    if (isOnline && conn?.open) conn.send({ type: 'cheat-spawn-piece', r, c, col, pt });
+}
 
 // --- Learn & Coach Logic ---
 let currentLesson = null;

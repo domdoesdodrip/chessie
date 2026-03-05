@@ -6,8 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Chessie</title>
     <meta name="description" content="Play chess online for free!">
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9823;</text></svg>">
+    <link rel="icon" type="image/png" href="favicon.png">
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
@@ -103,6 +102,18 @@
                         <div class="pi-sub">Challenge a friend</div>
                     </div>
                 </div>
+                <!-- Cheat Menu button -->
+                <div class="plus-item" id="cheat-plus-btn" style="display:none;"
+                    onclick="closePlusMenu();openCheatMenu();">
+                    <svg viewBox="0 0 24 24">
+                        <path fill="#f44336"
+                            d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 16h2v2h-2zm0-6h2v4h-2z" />
+                    </svg>
+                    <div>
+                        <div class="pi-label" style="color:#f44336">Cheat Menu</div>
+                        <div class="pi-sub">Owner-Exclusive</div>
+                    </div>
+                </div>
                 <div class="plus-item" onclick="closePlusMenu();openLearnMenu();">
                     <svg viewBox="0 0 24 24">
                         <path
@@ -154,10 +165,15 @@
         <div class="friends-panel">
             <div class="fp-header">
                 <div class="fp-profile-row">
-                    <div class="fp-avatar fp-avatar-lg" id="fp-avatar-main">?</div>
+                    <div class="fp-avatar fp-avatar-lg" id="fp-avatar-main"
+                        onclick="document.getElementById('avatar-file-input').click()" title="Change avatar">?</div>
+                    <input type="file" id="avatar-file-input" accept="image/*" style="display:none"
+                        onchange="handleAvatarUpload(this)">
                     <div>
-                        <div class="fp-username-main" id="fp-username">—</div>
+                        <div class="fp-username-main" id="fp-username" style="cursor:pointer;"
+                            onclick="if(currentUser) showUserProfile(currentUser.uid)" title="View your profile">—</div>
                         <div class="fp-online-dot is-online">● Online</div>
+                        <div class="fp-stats" id="fp-stats"></div>
                     </div>
                     <button class="fp-signout-btn" onclick="doSignOut()">Sign Out</button>
                 </div>
@@ -242,6 +258,46 @@
         </div>
     </div>
 
+    <div id="cheat-overlay" class="overlay" style="display:none;">
+        <div class="online-panel">
+            <h2 style="color:#f44336;margin-bottom:0px;">Cheat Menu</h2>
+            <div class="online-subtitle" style="margin-top:5px;margin-bottom:20px;">Owner's tools</div>
+
+            <button class="online-btn" id="cheat-toggle-moves" onclick="toggleCheatArrows()"
+                style="background:#555">Toggle Best Moves: OFF</button>
+            <button class="online-btn" id="cheat-toggle-god" onclick="toggleGodMode()" style="background:#555">Move Any
+                Piece Anywhere: OFF</button>
+            <button class="online-btn" onclick="cheatForceWin()" style="background:#4caf50">Instant Win
+                (Checkmate)</button>
+            <button class="online-btn" onclick="cheatForceDraw()" style="background:#ff9800">Force Draw</button>
+            <button class="online-btn" onclick="cheatForceResign()" style="background:#f44336">Force Opp to
+                Resign</button>
+
+            <div style="margin-top:10px;text-align:left;font-size:0.9rem">
+                <span style="color:var(--text-muted)">Spawn Piece</span>
+                <div style="display:flex;gap:5px;margin-top:5px;">
+                    <select id="cheat-spawn-col" class="online-field" style="width:auto;margin:0;padding:5px">
+                        <option value="w">White</option>
+                        <option value="b">Black</option>
+                    </select>
+                    <select id="cheat-spawn-pt" class="online-field" style="width:auto;margin:0;padding:5px">
+                        <option value="P">Pawn</option>
+                        <option value="N">Knight</option>
+                        <option value="B">Bishop</option>
+                        <option value="R">Rook</option>
+                        <option value="Q">Queen</option>
+                    </select>
+                    <input id="cheat-spawn-sq" class="online-field" type="text" placeholder="e.g. e4"
+                        style="width:60px;margin:0;padding:5px">
+                    <button class="online-btn" style="width:auto;padding:5px 15px;margin:0"
+                        onclick="cheatSpawnPiece()">Add</button>
+                </div>
+            </div>
+
+            <button class="online-btn close" style="margin-top:20px;" onclick="closeCheatMenu()">Close</button>
+        </div>
+    </div>
+
     <div id="online-overlay">
         <div class="online-panel" style="position:relative">
             <h2>Play Online</h2>
@@ -321,6 +377,18 @@
         </div>
     </div>
 
+    <button id="sound-toggle" onclick="toggleSound()" title="Toggle sound">
+        <svg id="sound-on-icon" viewBox="0 0 24 24">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+        </svg>
+        <svg id="sound-off-icon" viewBox="0 0 24 24" style="display:none">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            <line x1="23" y1="9" x2="17" y2="15" />
+            <line x1="17" y1="9" x2="23" y2="15" />
+        </svg>
+    </button>
     <button id="chat-toggle" onclick="toggleChat()">Chat <span class="chat-badge" id="chat-badge">0</span></button>
     <div id="chat-panel">
         <div class="chat-header"><span>Chat</span><span class="chat-close" onclick="toggleChat()">×</span></div>
