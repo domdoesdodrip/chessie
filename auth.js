@@ -529,7 +529,7 @@ function getEloRank(elo) { if (elo <= 250) return "Beginner"; if (elo <= 400) re
 function calculateElo(myElo, oppElo, outcome, accuracy = 50) { const K = 32; const expected = 1 / (1 + Math.pow(10, (oppElo - myElo) / 400)); const score = outcome === 'win' ? 1 : outcome === 'loss' ? 0 : 0.5; let change = K * (score - expected); let perfModifier = (accuracy - 50) / 10; if (outcome === 'draw' && accuracy >= 80) perfModifier += 3; return Math.max(100, Math.min(3500, Math.round(myElo + change + perfModifier))); }
 function recordGameResult(outcome, oppElo = 225, accuracy = 50) { if (!currentUser) return null; const field = outcome === 'win' ? 'wins' : outcome === 'loss' ? 'losses' : 'draws'; const myElo = currentProfile?.elo || 225; const newElo = calculateElo(myElo, oppElo, outcome, accuracy); const eloChange = newElo - myElo; if (currentProfile) currentProfile.elo = newElo; db.collection('users').doc(currentUser.uid).update({ [field]: firebase.firestore.FieldValue.increment(1), gamesPlayed: firebase.firestore.FieldValue.increment(1), elo: newElo }).catch(() => { }); return { newElo, eloChange }; }
 function recordLocalGameResult(outcome, gameType) { if (!currentUser) return null; const field = outcome === 'win' ? 'wins' : outcome === 'loss' ? 'losses' : 'draws'; const typeField = gameType === 'bot' ? 'botGames' : 'localGames'; db.collection('users').doc(currentUser.uid).update({ [field]: firebase.firestore.FieldValue.increment(1), gamesPlayed: firebase.firestore.FieldValue.increment(1), [typeField]: firebase.firestore.FieldValue.increment(1) }).catch(() => { }); return { gameType }; }
-async function loadStats() { const el = document.getElementById('fp-stats'); if (!el || !currentUser) return; try { const snap = await db.collection('users').doc(currentUser.uid).get(); const d = snap.data() || {}; const elo = d.elo || 225; const botG = d.botGames || 0; const localG = d.localGames || 0; let extra = ''; if (botG > 0 || localG > 0) { const parts = []; if (botG > 0) parts.push(botG + ' vs Bot'); if (localG > 0) parts.push(localG + ' Local'); extra = '<br><span style="font-size:0.7rem;color:var(--text-muted);">' + parts.join(' · ') + '</span>'; } el.innerHTML = '<span style="color:#e08c32;margin-right:6px" title="' + getEloRank(elo) + '">Elo ' + elo + '</span> <span class="stat-w">' + (d.wins || 0) + 'W</span> <span class="stat-l">' + (d.losses || 0) + 'L</span> <span class="stat-d">' + (d.draws || 0) + 'D</span>' + extra; } catch (e) { el.innerHTML = ''; } }
+async function loadStats() { const el = document.getElementById('fp-stats'); if (!el || !currentUser) return; try { const snap = await db.collection('users').doc(currentUser.uid).get(); const d = snap.data() || {}; const elo = d.elo || 225; el.innerHTML = '<span style="color:#e08c32;margin-right:6px" title="' + getEloRank(elo) + '">Elo ' + elo + '</span> <span class="stat-w">' + (d.wins || 0) + 'W</span> <span class="stat-l">' + (d.losses || 0) + 'L</span> <span class="stat-d">' + (d.draws || 0) + 'D</span>'; } catch (e) { el.innerHTML = ''; } }
 
 async function showUserProfile(uid) {
     if (!uid) return;
@@ -538,7 +538,6 @@ async function showUserProfile(uid) {
     if (!userDoc.exists) return;
     const d = userDoc.data(); const uname = d.username; const elo = d.elo || 225;
     const w = d.wins || 0, l = d.losses || 0, dr = d.draws || 0;
-    const botG = d.botGames || 0, localG = d.localGames || 0;
     const bio = d.bio || "No bio set yet.";
     const activeMatch = d.activeMatch || null;
     const userOnline = isUserOnline(d);
@@ -565,15 +564,7 @@ async function showUserProfile(uid) {
     let elHtml = document.getElementById('user-profile-modal');
     if (!elHtml) { elHtml = document.createElement('div'); elHtml.id = 'user-profile-modal'; elHtml.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;'; elHtml.onclick = function (e) { if (e.target === elHtml) elHtml.style.display = 'none'; }; document.body.appendChild(elHtml); }
 
-    let gameTypeBadges = '';
-    if (botG > 0 || localG > 0) {
-        const parts = [];
-        if (botG > 0) parts.push('<span style="color:#90caf9;">' + botG + ' vs Bot</span>');
-        if (localG > 0) parts.push('<span style="color:#ce93d8;">' + localG + ' Local</span>');
-        gameTypeBadges = '<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px;">' + parts.join(' · ') + '</div>';
-    }
-
-    elHtml.innerHTML = `<div style="background:var(--bg-card);padding:20px;border-radius:12px;width:90%;max-width:320px;text-align:center;box-shadow:var(--shadow);position:relative;">${avatarHtml}<h2 style="margin:0 0 5px 0;font-size:1.4rem;">${hEsc(uname)}</h2><div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:4px;"><span style="color:#e08c32;font-weight:bold;margin-right:10px;">${getEloRank(elo)} (${elo})</span><span style="color:#4caf50;">${w}W</span> · <span style="color:#f44336;">${l}L</span> · <span style="color:#ffb300;">${dr}D</span></div>${gameTypeBadges}${matchBadge}${onlineBadge}${bioHtml}${actionHtml ? '<div style="margin-bottom:15px;display:flex;justify-content:center;gap:6px;flex-wrap:wrap;">' + actionHtml + '</div>' : ''}<button style="position:absolute;top:10px;right:10px;background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;" onclick="document.getElementById('user-profile-modal').style.display='none'">✕</button></div>`;
+    elHtml.innerHTML = `<div style="background:var(--bg-card);padding:20px;border-radius:12px;width:90%;max-width:320px;text-align:center;box-shadow:var(--shadow);position:relative;">${avatarHtml}<h2 style="margin:0 0 5px 0;font-size:1.4rem;">${hEsc(uname)}</h2><div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:4px;"><span style="color:#e08c32;font-weight:bold;margin-right:10px;">${getEloRank(elo)} (${elo})</span><span style="color:#4caf50;">${w}W</span> · <span style="color:#f44336;">${l}L</span> · <span style="color:#ffb300;">${dr}D</span></div>${matchBadge}${onlineBadge}${bioHtml}${actionHtml ? '<div style="margin-bottom:15px;display:flex;justify-content:center;gap:6px;flex-wrap:wrap;">' + actionHtml + '</div>' : ''}<button style="position:absolute;top:10px;right:10px;background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;" onclick="document.getElementById('user-profile-modal').style.display='none'">✕</button></div>`;
     elHtml.style.display = 'flex';
 }
 
