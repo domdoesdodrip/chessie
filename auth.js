@@ -54,7 +54,7 @@ function updatePresence(online) {
     db.collection('users').doc(currentUser.uid).update({
         online: online,
         lastSeen: firebase.firestore.FieldValue.serverTimestamp()
-    }).catch(() => {});
+    }).catch(() => { });
 }
 
 // FIX: Only check lastSeen timestamp - don't trust the online boolean
@@ -98,10 +98,10 @@ window.addEventListener('beforeunload', () => {
                 `https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/(default)/documents/users/${currentUser.uid}?updateMask.fieldPaths=online`,
                 new Blob([JSON.stringify({ fields: { online: { booleanValue: false } } })], { type: 'application/json' })
             );
-        } catch (e) {}
+        } catch (e) { }
         db.collection('users').doc(currentUser.uid)
             .update({ online: false, lastSeen: firebase.firestore.FieldValue.serverTimestamp() })
-            .catch(() => {});
+            .catch(() => { });
     }
 });
 
@@ -171,13 +171,16 @@ function renderOlFriendsList() {
             if (isOwnGame) {
                 actionBtn = `<span class="fp-pill pending">Your Game</span>`;
             } else {
-                actionBtn = `<button class="fp-btn fp-challenge" onclick="spectateMatch('${aEsc(f.activeMatch)}')">\uD83D\uDC41 Watch</button>`;
+                if (f.activeMatch === 'bot' || f.activeMatch === 'local') actionBtn = `<span class="fp-pill pending">Offline Game</span>`;
+                else actionBtn = `<button class="fp-btn fp-challenge" onclick="spectateMatch('${aEsc(f.activeMatch)}')">\uD83D\uDC41 Watch</button>`;
             }
         } else {
             actionBtn = `<button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>`;
         }
 
-        const statusText = f.activeMatch ? '\uD83D\uDFE2 In Match' : (f.online ? '\u25cf Online' : '\u25cb Offline');
+        let statusText = f.activeMatch ? '\uD83D\uDFE2 In Match' : (f.online ? '\u25cf Online' : '\u25cb Offline');
+        if (f.activeMatch === 'bot') statusText = '\uD83D\uDFE2 Playing Bot';
+        else if (f.activeMatch === 'local') statusText = '\uD83D\uDFE2 Playing Local';
         const statusClass = (f.activeMatch || f.online) ? 'is-online' : '';
 
         return `
@@ -388,12 +391,16 @@ function renderFriendsList() {
     const buildList = (arr) => arr.map(f => {
         const avatarHtml = f.avatar ? `<div class="fp-avatar" style="background-image:url(${f.avatar});background-size:cover;background-position:center;background-color:transparent;color:transparent;">${f.username[0].toUpperCase()}</div>` : `<div class="fp-avatar">${f.username[0].toUpperCase()}</div>`;
         let primaryAction;
-        if (f.activeMatch) {
+        if (f.activeMatch === 'bot' || f.activeMatch === 'local') {
+            primaryAction = `<span class="fp-pill pending">Offline Game</span>`;
+        } else if (f.activeMatch) {
             primaryAction = `<button class="fp-btn fp-challenge" onclick="spectateMatch('${aEsc(f.activeMatch)}')">\uD83D\uDC41 Watch</button>`;
         } else {
             primaryAction = `<button class="fp-btn fp-challenge" onclick="challengeFriend('${f.uid}','${aEsc(f.username)}')">\u2694 Play</button>`;
         }
-        const statusText = f.activeMatch ? '\uD83D\uDFE2 In Match' : (f.online ? '\u25cf Online' : '\u25cb Offline');
+        let statusText = f.activeMatch ? '\uD83D\uDFE2 In Match' : (f.online ? '\u25cf Online' : '\u25cb Offline');
+        if (f.activeMatch === 'bot') statusText = '\uD83D\uDFE2 Playing Bot';
+        else if (f.activeMatch === 'local') statusText = '\uD83D\uDFE2 Playing Local';
         const statusClass = (f.activeMatch || f.online) ? 'is-online' : '';
         return `<div class="fp-friend-item"><div class="fp-friend-info" style="cursor:pointer;" onclick="showUserProfile('${f.uid}')">${avatarHtml}<div><div class="fp-friend-name">${hEsc(f.username)}</div><div class="fp-online-dot ${statusClass}">${statusText}</div></div></div><div class="fp-friend-actions">${primaryAction}<button class="fp-btn fp-decline" onclick="removeFriend('${f.id}','${aEsc(f.username)}')" title="Remove">\u2715</button></div></div>`;
     }).join('');
@@ -506,10 +513,10 @@ async function findRandomMatch() {
             cleanupPeer(); document.getElementById('btn-create').disabled = true; document.getElementById('btn-join').disabled = true;
             const p = new Peer('chessie-host-' + rc, peerOpts); peer = p;
             p.on('open', () => { statusEl.innerHTML = 'Waiting\u2026'; });
-            p.on('connection', c => { c.once('data', d => { if (d.type === 'spectate') { spectators.push(c); updateSpectatorCount(); syncSpectator(c); c.on('close', () => { spectators = spectators.filter(s => s !== c); updateSpectatorCount(); }); } else if (d.type === 'hello') { if (conn) { c.close(); return; } conn = c; myColor = 'w'; flipped = false; db.collection('matchmaking').doc(docRef.id).delete().catch(() => {}); if (randomSearchUnsub) { randomSearchUnsub(); randomSearchUnsub = null; } document.getElementById('btn-random').disabled = false; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; statusEl.style.display = 'none'; initConn(); handleNet(d); } }); });
+            p.on('connection', c => { c.once('data', d => { if (d.type === 'spectate') { spectators.push(c); updateSpectatorCount(); syncSpectator(c); c.on('close', () => { spectators = spectators.filter(s => s !== c); updateSpectatorCount(); }); } else if (d.type === 'hello') { if (conn) { c.close(); return; } conn = c; myColor = 'w'; flipped = false; db.collection('matchmaking').doc(docRef.id).delete().catch(() => { }); if (randomSearchUnsub) { randomSearchUnsub(); randomSearchUnsub = null; } document.getElementById('btn-random').disabled = false; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; statusEl.style.display = 'none'; initConn(); handleNet(d); } }); });
             p.on('error', e => { statusEl.innerHTML = 'Error: ' + e.type; statusEl.className = 'online-status error'; document.getElementById('btn-random').disabled = false; });
             randomSearchUnsub = db.collection('matchmaking').doc(docRef.id).onSnapshot(snap => { if (snap.data()?.status === 'matched') { statusEl.innerHTML = 'Opponent found!'; statusEl.className = 'online-status success'; if (randomSearchUnsub) { randomSearchUnsub(); randomSearchUnsub = null; } } });
-            setTimeout(() => { if (randomSearchUnsub) { randomSearchUnsub(); randomSearchUnsub = null; db.collection('matchmaking').doc(docRef.id).delete().catch(() => {}); statusEl.innerHTML = 'No opponent. Try room code.'; statusEl.className = 'online-status error'; document.getElementById('btn-random').disabled = false; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; cleanupPeer(); } }, 180000);
+            setTimeout(() => { if (randomSearchUnsub) { randomSearchUnsub(); randomSearchUnsub = null; db.collection('matchmaking').doc(docRef.id).delete().catch(() => { }); statusEl.innerHTML = 'No opponent. Try room code.'; statusEl.className = 'online-status error'; document.getElementById('btn-random').disabled = false; document.getElementById('btn-create').disabled = false; document.getElementById('btn-join').disabled = false; cleanupPeer(); } }, 180000);
         }
     } catch (e) { statusEl.innerHTML = 'Error.'; statusEl.className = 'online-status error'; document.getElementById('btn-random').disabled = false; }
 }
@@ -520,8 +527,9 @@ function showMsg(msg) { const t = document.createElement('div'); t.className = '
 
 function getEloRank(elo) { if (elo <= 250) return "Beginner"; if (elo <= 400) return "Good"; if (elo <= 600) return "Average"; if (elo <= 1000) return "Amazing"; if (elo <= 1500) return "Professional"; if (elo <= 2200) return "Master"; if (elo <= 3000) return "Demon"; return "GrandMaster"; }
 function calculateElo(myElo, oppElo, outcome, accuracy = 50) { const K = 32; const expected = 1 / (1 + Math.pow(10, (oppElo - myElo) / 400)); const score = outcome === 'win' ? 1 : outcome === 'loss' ? 0 : 0.5; let change = K * (score - expected); let perfModifier = (accuracy - 50) / 10; if (outcome === 'draw' && accuracy >= 80) perfModifier += 3; return Math.max(100, Math.min(3500, Math.round(myElo + change + perfModifier))); }
-function recordGameResult(outcome, oppElo = 225, accuracy = 50) { if (!currentUser) return null; const field = outcome === 'win' ? 'wins' : outcome === 'loss' ? 'losses' : 'draws'; const myElo = currentProfile?.elo || 225; const newElo = calculateElo(myElo, oppElo, outcome, accuracy); const eloChange = newElo - myElo; if (currentProfile) currentProfile.elo = newElo; db.collection('users').doc(currentUser.uid).update({ [field]: firebase.firestore.FieldValue.increment(1), gamesPlayed: firebase.firestore.FieldValue.increment(1), elo: newElo }).catch(() => {}); return { newElo, eloChange }; }
-async function loadStats() { const el = document.getElementById('fp-stats'); if (!el || !currentUser) return; try { const snap = await db.collection('users').doc(currentUser.uid).get(); const d = snap.data() || {}; const elo = d.elo || 225; el.innerHTML = '<span style="color:#e08c32;margin-right:6px" title="' + getEloRank(elo) + '">Elo ' + elo + '</span> <span class="stat-w">' + (d.wins||0) + 'W</span> <span class="stat-l">' + (d.losses||0) + 'L</span> <span class="stat-d">' + (d.draws||0) + 'D</span>'; } catch (e) { el.innerHTML = ''; } }
+function recordGameResult(outcome, oppElo = 225, accuracy = 50) { if (!currentUser) return null; const field = outcome === 'win' ? 'wins' : outcome === 'loss' ? 'losses' : 'draws'; const myElo = currentProfile?.elo || 225; const newElo = calculateElo(myElo, oppElo, outcome, accuracy); const eloChange = newElo - myElo; if (currentProfile) currentProfile.elo = newElo; db.collection('users').doc(currentUser.uid).update({ [field]: firebase.firestore.FieldValue.increment(1), gamesPlayed: firebase.firestore.FieldValue.increment(1), elo: newElo }).catch(() => { }); return { newElo, eloChange }; }
+function recordLocalGameResult(outcome, gameType) { if (!currentUser) return null; const field = outcome === 'win' ? 'wins' : outcome === 'loss' ? 'losses' : 'draws'; const typeField = gameType === 'bot' ? 'botGames' : 'localGames'; db.collection('users').doc(currentUser.uid).update({ [field]: firebase.firestore.FieldValue.increment(1), gamesPlayed: firebase.firestore.FieldValue.increment(1), [typeField]: firebase.firestore.FieldValue.increment(1) }).catch(() => { }); return { gameType }; }
+async function loadStats() { const el = document.getElementById('fp-stats'); if (!el || !currentUser) return; try { const snap = await db.collection('users').doc(currentUser.uid).get(); const d = snap.data() || {}; const elo = d.elo || 225; const botG = d.botGames || 0; const localG = d.localGames || 0; let extra = ''; if (botG > 0 || localG > 0) { const parts = []; if (botG > 0) parts.push(botG + ' vs Bot'); if (localG > 0) parts.push(localG + ' Local'); extra = '<br><span style="font-size:0.7rem;color:var(--text-muted);">' + parts.join(' · ') + '</span>'; } el.innerHTML = '<span style="color:#e08c32;margin-right:6px" title="' + getEloRank(elo) + '">Elo ' + elo + '</span> <span class="stat-w">' + (d.wins || 0) + 'W</span> <span class="stat-l">' + (d.losses || 0) + 'L</span> <span class="stat-d">' + (d.draws || 0) + 'D</span>' + extra; } catch (e) { el.innerHTML = ''; } }
 
 async function showUserProfile(uid) {
     if (!uid) return;
@@ -530,6 +538,7 @@ async function showUserProfile(uid) {
     if (!userDoc.exists) return;
     const d = userDoc.data(); const uname = d.username; const elo = d.elo || 225;
     const w = d.wins || 0, l = d.losses || 0, dr = d.draws || 0;
+    const botG = d.botGames || 0, localG = d.localGames || 0;
     const bio = d.bio || "No bio set yet.";
     const activeMatch = d.activeMatch || null;
     const userOnline = isUserOnline(d);
@@ -539,12 +548,14 @@ async function showUserProfile(uid) {
         const fid = [currentUser.uid, uid].sort().join('_');
         const fDoc = await db.collection('friends').doc(fid).get();
         let watchBtn = '';
-        if (activeMatch) watchBtn = '<button class="fp-btn fp-challenge" onclick="spectateMatch(\'' + aEsc(activeMatch) + '\')" style="margin-right:6px;">\uD83D\uDC41 Watch Live</button>';
+        if (activeMatch && activeMatch !== 'bot' && activeMatch !== 'local') watchBtn = '<button class="fp-btn fp-challenge" onclick="spectateMatch(\'' + aEsc(activeMatch) + '\')" style="margin-right:6px;">\uD83D\uDC41 Watch Live</button>';
         if (fDoc.exists) { const st = fDoc.data().status; if (st === 'accepted') actionHtml = watchBtn + '<button class="fp-btn fp-challenge" onclick="challengeFriend(\'' + uid + '\',\'' + aEsc(uname) + '\')">⚔ Play</button>'; else if (fDoc.data().requester === currentUser.uid) actionHtml = watchBtn + '<span class="fp-pill pending">Sent</span>'; else actionHtml = watchBtn + '<button class="fp-btn fp-accept" onclick="acceptFriendReq(\'' + fDoc.id + '\')">✓ Accept</button>'; }
         else actionHtml = watchBtn + '<button class="fp-btn fp-add" onclick="sendFriendRequest(\'' + uid + '\',\'' + aEsc(uname) + '\')">+ Add</button>';
     }
 
     let matchBadge = activeMatch ? '<div style="background:#2e7d32;color:#fff;padding:4px 12px;border-radius:20px;font-size:0.8rem;display:inline-block;margin-bottom:10px;">\uD83D\uDFE2 In Match</div>' : '';
+    if (activeMatch === 'bot') matchBadge = '<div style="background:#1e88e5;color:#fff;padding:4px 12px;border-radius:20px;font-size:0.8rem;display:inline-block;margin-bottom:10px;">\uD83D\uDFE2 Playing Bot</div>';
+    else if (activeMatch === 'local') matchBadge = '<div style="background:#ce93d8;color:#fff;padding:4px 12px;border-radius:20px;font-size:0.8rem;display:inline-block;margin-bottom:10px;">\uD83D\uDFE2 Playing Local</div>';
     let onlineBadge = !activeMatch ? (userOnline ? '<div style="color:#4caf50;font-size:0.8rem;margin-bottom:10px;">\u25cf Online</div>' : '<div style="color:#888;font-size:0.8rem;margin-bottom:10px;">\u25cb Offline</div>') : '';
 
     let bioHtml = `<div style="background:var(--bg-dark);padding:10px;border-radius:8px;margin-bottom:15px;text-align:left;"><div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:5px;display:flex;justify-content:space-between;"><span>Bio</span>${(currentUser && uid === currentUser.uid) ? '<span style="color:#6a5acd;cursor:pointer;" onclick="editProfileBio()">Edit</span>' : ''}</div><div id="user-profile-bio-text" style="font-size:0.9rem;white-space:pre-wrap;">${hEsc(bio)}</div>${(currentUser && uid === currentUser.uid) ? '<div id="user-profile-bio-edit" style="display:none;margin-top:5px;"><textarea id="user-profile-bio-input" maxlength="150" style="width:100%;background:var(--bg-darker);color:#fff;border:1px solid #444;border-radius:4px;padding:5px;resize:vertical;min-height:60px;">' + hEsc(bio) + '</textarea><div style="text-align:right;margin-top:5px;"><button onclick="saveProfileBio(\'' + uid + '\')" style="background:#6a5acd;color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;">Save</button></div></div>' : ''}</div>`;
@@ -552,9 +563,17 @@ async function showUserProfile(uid) {
     const avatarHtml = d.avatar ? '<div class="fp-avatar fp-avatar-lg" style="background-image:url(' + d.avatar + ');background-size:cover;background-position:center;background-color:transparent;color:transparent;margin:0 auto 10px auto;">' + uname[0].toUpperCase() + '</div>' : '<div class="fp-avatar fp-avatar-lg" style="margin:0 auto 10px auto;">' + uname[0].toUpperCase() + '</div>';
 
     let elHtml = document.getElementById('user-profile-modal');
-    if (!elHtml) { elHtml = document.createElement('div'); elHtml.id = 'user-profile-modal'; elHtml.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;'; elHtml.onclick = function(e) { if (e.target === elHtml) elHtml.style.display = 'none'; }; document.body.appendChild(elHtml); }
+    if (!elHtml) { elHtml = document.createElement('div'); elHtml.id = 'user-profile-modal'; elHtml.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;'; elHtml.onclick = function (e) { if (e.target === elHtml) elHtml.style.display = 'none'; }; document.body.appendChild(elHtml); }
 
-    elHtml.innerHTML = `<div style="background:var(--bg-card);padding:20px;border-radius:12px;width:90%;max-width:320px;text-align:center;box-shadow:var(--shadow);position:relative;">${avatarHtml}<h2 style="margin:0 0 5px 0;font-size:1.4rem;">${hEsc(uname)}</h2><div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:10px;"><span style="color:#e08c32;font-weight:bold;margin-right:10px;">${getEloRank(elo)} (${elo})</span><span style="color:#4caf50;">${w}W</span> · <span style="color:#f44336;">${l}L</span> · <span style="color:#ffb300;">${dr}D</span></div>${matchBadge}${onlineBadge}${bioHtml}${actionHtml ? '<div style="margin-bottom:15px;display:flex;justify-content:center;gap:6px;flex-wrap:wrap;">' + actionHtml + '</div>' : ''}<button style="position:absolute;top:10px;right:10px;background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;" onclick="document.getElementById('user-profile-modal').style.display='none'">✕</button></div>`;
+    let gameTypeBadges = '';
+    if (botG > 0 || localG > 0) {
+        const parts = [];
+        if (botG > 0) parts.push('<span style="color:#90caf9;">' + botG + ' vs Bot</span>');
+        if (localG > 0) parts.push('<span style="color:#ce93d8;">' + localG + ' Local</span>');
+        gameTypeBadges = '<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px;">' + parts.join(' · ') + '</div>';
+    }
+
+    elHtml.innerHTML = `<div style="background:var(--bg-card);padding:20px;border-radius:12px;width:90%;max-width:320px;text-align:center;box-shadow:var(--shadow);position:relative;">${avatarHtml}<h2 style="margin:0 0 5px 0;font-size:1.4rem;">${hEsc(uname)}</h2><div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:4px;"><span style="color:#e08c32;font-weight:bold;margin-right:10px;">${getEloRank(elo)} (${elo})</span><span style="color:#4caf50;">${w}W</span> · <span style="color:#f44336;">${l}L</span> · <span style="color:#ffb300;">${dr}D</span></div>${gameTypeBadges}${matchBadge}${onlineBadge}${bioHtml}${actionHtml ? '<div style="margin-bottom:15px;display:flex;justify-content:center;gap:6px;flex-wrap:wrap;">' + actionHtml + '</div>' : ''}<button style="position:absolute;top:10px;right:10px;background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;" onclick="document.getElementById('user-profile-modal').style.display='none'">✕</button></div>`;
     elHtml.style.display = 'flex';
 }
 
